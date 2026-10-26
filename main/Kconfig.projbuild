@@ -1,0 +1,19 @@
+menu "NOTE4 Bus Board"
+
+config BUS_WIFI_SSID
+    string "Wi-Fi SSID (default; NVS 'bus-set' overrides)"
+    default ""
+
+config BUS_WIFI_PASSWORD
+    string "Wi-Fi password (default; NVS 'bus-set' overrides)"
+    default ""
+
+config BUS_STOP_CODE
+    string "Stop code to monitor (default; NVS 'bus-set stop' overrides)"
+    default "T394"
+
+config BUS_HERO_ROUTE
+    string "Hero route shown large (default; NVS 'bus-set route' overrides)"
+    default "51A"
+
+endmenu
