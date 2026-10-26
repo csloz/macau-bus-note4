@@ -1,0 +1,27 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: espressif/idf:release-v6.1
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Build firmware
+        shell: bash
+        run: |
+          source /opt/esp/idf/export.sh
+          idf.py build
+
+      - name: Upload app binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: note4_bus
+          path: build/note4_bus.bin
+          if-no-files-found: error
