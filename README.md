@@ -7,9 +7,14 @@ The device connects to Wi-Fi, fetches live bus positions from the DSAT API
 (bis.dsat.gov.mo) plus Cotai weather from Open-Meteo every **5 minutes**, and
 repaints the e-paper screen.
 
+![ZECTRIX NOTE4 next to the Quote/0 showing matching 51A @ T394 output](docs/zectrix-and-quote0.jpeg)
+
+*The NOTE4 (top) and the Quote/0 (bottom) side by side — same stop, same data,
+matching layout. Photo taken minutes apart (17:10 vs 17:11).*
+
 ## Screen layout (mirrors the Quote/0 image output)
 
-- Black header bar: hero route (large), stop code, clock (Asia/Hong_Kong)
+- Black header bar: hero route (large), stop code, clock (SNTP, UTC+8)
 - Hero ETA in minutes (very large), unit MIN; sub-line "N stops - X km"
 - Weather block top-right: temperature, condition, RH (Open-Meteo, Cotai)
 - Divider, then footer: "NEXT n STOPS - X KM - nM" (following bus) and
