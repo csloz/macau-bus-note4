@@ -18,4 +18,7 @@ void BusUiOpenMenu();
 // key = 0 up, 1 down, 2 ok; long = press-and-hold instead of click.
 void BusUiInjectKey(int key, bool long_press);
 
+// Current UI page name + selection state, for headless test assertions.
+void BusUiState(char* out, int out_len);
+
 bool BusUiActive();

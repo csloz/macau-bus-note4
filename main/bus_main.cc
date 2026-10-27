@@ -31,7 +31,7 @@
 namespace {
 
 constexpr const char* kTag = "bus.main";
-constexpr const char* kVersion = "2.4.0";
+constexpr const char* kVersion = "2.5.0";
 constexpr TickType_t kRefreshInterval = pdMS_TO_TICKS(5 * 60 * 1000);
 constexpr TickType_t kWifiRetryInterval = pdMS_TO_TICKS(30 * 1000);
 constexpr int kRefreshBit = BIT0;
@@ -379,6 +379,18 @@ extern "C" void app_main(void) {
         },
         nullptr, nullptr, nullptr};
     esp_console_cmd_register(&key_cmd);
+
+    static esp_console_cmd_t page_cmd = {
+            "bus-page", "Print current UI page + selection", nullptr,
+            +[](int argc, char** argv) -> int {
+                char state[96];
+                BusUiState(state, sizeof(state));
+                printf("page: %s (active=%d)\n", state,
+                       BusUiActive() ? 1 : 0);
+                return 0;
+            },
+            nullptr, nullptr, nullptr};
+    esp_console_cmd_register(&page_cmd);
 
     RenderSplash("starting...");
 

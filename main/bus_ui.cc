@@ -22,7 +22,8 @@
 #include "bus_display.h"
 #include "bus_stops_data.h"
 #include "bus_wifi.h"
-#include "cjk_font_16x16.h"
+#include "u8g2_font.h"
+#include "u8g2_font_macau.h"
 
 namespace {
 
@@ -30,11 +31,19 @@ constexpr const char* kTag = "bus.ui";
 constexpr int kW = HearthCanvas::kWidth;
 constexpr int kHeaderH = 40;
 
-// List pages: up to 8 rows of scale-2 text below the header.
+// CJK/UI text renders from the compact u8g2 WenQuanYi 12px font (a few KB).
+constexpr const uint8_t* kFont = u8g2_font_wqy12_t_macau;
+constexpr int kFontAscent = 10;  // cap/CJK height above the baseline
+
+// List pages: scale-2 ASCII rows (wifi, routes).
 constexpr int kRowH = 32;
 constexpr int kListY0 = kHeaderH;
 constexpr int kListY1 = kListY0 + 8 * kRowH + 8;
 constexpr int kRowsVisible = 8;
+
+// Stop dropdown: compact 16px rows fit 15 on screen.
+constexpr int kStopRowH = 16;
+constexpr int kStopRowsVisible = 15;
 
 // ---------- UTF-8 / CJK text drawing ----------
 //
@@ -61,35 +70,6 @@ int DecodeCp(const char* s, int* len) {
     return 0xFFFD;  // replacement character
 }
 
-void DrawCjkGlyph(int cp, int x, int y, bool inverted) {
-    auto& c = BusDisplayCanvas();
-    if (cp < kCjkFirst || cp > kCjkLast) {
-        // Unknown codepoint: hollow box placeholder.
-        c.Rect(x + 2, y + 8, 12, 12, !inverted);
-        return;
-    }
-    const uint8_t* g =
-        &kCjkGlyphs[(cp - kCjkFirst) * kCjkGlyphBytes];
-    const int gy = y + 8;  // center the 16px glyph on the 32px text line
-    for (int row = 0; row < 16; row++) {
-        if (gy + row < 0 || gy + row >= HearthCanvas::kHeight) continue;
-        const uint8_t hi = g[row * 2];
-        const uint8_t lo = g[row * 2 + 1];
-        if (hi == 0 && lo == 0) continue;
-        for (int bit = 0; bit < 16; bit++) {
-            const int px = x + bit;
-            if (px < 0 || px >= HearthCanvas::kWidth) continue;
-            const bool ink =
-                (bit < 8) ? ((hi >> (7 - bit)) & 1) : ((lo >> (15 - bit)) & 1);
-            if (ink) {
-                c.Pixel(px, gy + row, !inverted);
-            }
-        }
-    }
-}
-
-// Draw a UTF-8 string (ASCII scale-2 + CJK 16x16) starting at (x, y).
-// Truncates after max_px pixels. Returns the end x.
 int TextUtf8(int x, int y, const char* s, int max_px, bool inverted) {
     auto& c = BusDisplayCanvas();
     int i = 0;
@@ -101,7 +81,9 @@ int TextUtf8(int x, int y, const char* s, int max_px, bool inverted) {
             char buf[2] = {static_cast<char>(cp), '\0'};
             c.Text(x, y, buf, 2, inverted);
         } else {
-            DrawCjkGlyph(cp, x, y, inverted);
+            // 12px u8g2 glyph, vertically centered on the 32px ASCII line.
+            u8g2font::DrawGlyph(c, kFont, x, y + 8 + kFontAscent,
+                                static_cast<uint16_t>(cp), inverted);
         }
         x += 16;
         i += len;
@@ -109,7 +91,7 @@ int TextUtf8(int x, int y, const char* s, int max_px, bool inverted) {
     return x;
 }
 
-// Scale-1 variant: ASCII 8px wide, CJK 16px wide (16px tall, no centering).
+// Scale-1 variant: ASCII 8px wide, CJK 12px via the u8g2 font.
 int TextUtf8Small(int x, int y, const char* s, int max_px) {
     auto& c = BusDisplayCanvas();
     int i = 0;
@@ -122,33 +104,18 @@ int TextUtf8Small(int x, int y, const char* s, int max_px) {
             c.Text(x, y, buf, 1, false);
             x += 8;
         } else {
-            if (x + 16 > max_px) break;
-            const uint8_t* g = (cp >= kCjkFirst && cp <= kCjkLast)
-                                   ? &kCjkGlyphs[(cp - kCjkFirst) * kCjkGlyphBytes]
-                                   : nullptr;
-            if (g != nullptr) {
-                for (int row = 0; row < 16; row++) {
-                    if (y + row >= HearthCanvas::kHeight) break;
-                    const uint8_t hi = g[row * 2];
-                    const uint8_t lo = g[row * 2 + 1];
-                    for (int bit = 0; bit < 16; bit++) {
-                        const int px = x + bit;
-                        if (px >= HearthCanvas::kWidth) break;
-                        const bool ink = (bit < 8) ? ((hi >> (7 - bit)) & 1)
-                                                   : ((lo >> (15 - bit)) & 1);
-                        if (ink) {
-                            c.Pixel(px, y + row, true);
-                        }
-                    }
-                }
-            } else {
-                c.Rect(x + 1, y + 2, 14, 12, true);
-            }
-            x += 16;
+            x += u8g2font::DrawGlyph(c, kFont, x, y + kFontAscent,
+                                     static_cast<uint16_t>(cp), false);
         }
         i += len;
     }
     return x;
+}
+
+// 12px u8g2 text: whole line (English + Chinese) in one pass.
+int TextSmall12(int x, int y_base, const char* s, int max_px, bool inverted) {
+    return u8g2font::DrawText(BusDisplayCanvas(), kFont, x, y_base, s, max_px,
+                              inverted);
 }
 
 // ---------- keyboard cell model ----------
@@ -522,7 +489,10 @@ void PaintStopForm(bool full) {
         const auto& st = bus_stops::kStops[g_stop_order[i]];
         if (std::strcmp(st.code, g_config->stop) == 0) {
             c.Text(16, 146, "NAME:", 1, false);
-            TextUtf8Small(60, 142, st.name, kW - 16);
+            char line[180];
+            std::snprintf(line, sizeof(line), "%s / %s", st.nameEn,
+                          st.nameCn);
+            TextSmall12(60, 152, line, kW - 8, false);
             break;
         }
     }
@@ -552,25 +522,52 @@ void PaintStopList(bool full) {
     auto& c = BusDisplayCanvas();
     Header("PICK STOP");
     const int total = g_stop_count + 1;  // + <BACK>
-    int first = g_stop_sel - (kRowsVisible - 1);
+    int first = g_stop_sel - (kStopRowsVisible - 1);
     if (first < 0) first = 0;
-    if (total > kRowsVisible && first > total - kRowsVisible) {
-        first = total - kRowsVisible;
+    if (total > kStopRowsVisible && first > total - kStopRowsVisible) {
+        first = total - kStopRowsVisible;
     }
-    for (int row = 0; row < kRowsVisible && first + row < total; row++) {
+    for (int row = 0; row < kStopRowsVisible && first + row < total; row++) {
         const int idx = first + row;
-        const int y = kListY0 + row * kRowH;
+        const int y = kListY0 + row * kStopRowH;
+        const int y_base = y + kFontAscent;
         const bool sel = idx == g_stop_sel;
         if (sel) {
-            c.FillRect(0, y, kW, kRowH, true);
+            c.FillRect(0, y, kW, kStopRowH, true);
         }
         if (idx == 0) {
-            c.Text(12, y, "<BACK>", 2, sel);
+            TextSmall12(12, y_base, "<BACK>", kW - 12, sel);
             continue;
         }
         const auto& st = bus_stops::kStops[g_stop_order[idx - 1]];
-        c.Text(12, y, st.code, 2, sel);
-        TextUtf8(92, y, st.name, kW - 12, sel);
+        // One line: code, English name, Chinese name (12px).
+        TextSmall12(4, y_base, st.code, 44, sel);
+        const int w_cn = u8g2font::TextWidth(kFont, st.nameCn);
+        const int cn_x = kW - 6 - w_cn;
+        if (cn_x > 44 + 8) {
+            // English between the code and the right-aligned Chinese name.
+            int max_en = cn_x - 8;
+            const int w_en = u8g2font::TextWidth(kFont, st.nameEn);
+            if (44 + w_en <= max_en) {
+                TextSmall12(44, y_base, st.nameEn, max_en, sel);
+            } else {
+                // Truncate with a ".." marker.
+                char buf[80];
+                int n = 0;
+                while (st.nameEn[n] != '\0' && n < 76) {
+                    buf[n] = st.nameEn[n];
+                    buf[n + 1] = '\0';
+                    if (44 + u8g2font::TextWidth(kFont, buf) + 12 > max_en) {
+                        break;
+                    }
+                    n++;
+                }
+                buf[n] = '\0';
+                std::snprintf(buf + n, sizeof(buf) - n, "..");
+                TextSmall12(44, y_base, buf, max_en, sel);
+            }
+        }
+        TextSmall12(cn_x, y_base, st.nameCn, kW - 6, sel);
     }
     Hint("OK=pick  HOLD OK=back");
     if (full) BusDisplayPaint(); else BusDisplayPaintRows(kListY0, 300);
@@ -1075,6 +1072,23 @@ void BusUiInjectKey(int key, bool long_press) {
     }
     ev.type = long_press ? kPressLong : kPressClick;
     Emit(ev);
+}
+
+void BusUiState(char* out, int out_len) {
+    static const char* kNames[] = {"card", "menu", "wifi", "pass",
+                                   "stopform", "stoplist", "routelist",
+                                   "msg"};
+    const int p = static_cast<int>(g_page);
+    if (p < 0 || p >= static_cast<int>(sizeof(kNames) / sizeof(kNames[0]))) {
+        std::snprintf(out, out_len, "?");
+        return;
+    }
+    std::snprintf(out, out_len, "%s sel=%d stops=%d routes=%d", kNames[p],
+                  g_page == Page::StopList ? g_stop_sel
+                  : g_page == Page::RouteList ? g_route_sel
+                  : g_page == Page::Menu ? g_menu_sel
+                  : -1,
+                  g_stop_count, g_route_count);
 }
 
 void BusUiStart(BusConfig* config, void (*on_exit)()) {

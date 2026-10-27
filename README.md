@@ -28,20 +28,21 @@ Hold **OK** on the normal card to open the settings menu (UP/DOWN to pick,
 OK to open, hold OK to exit back to the card):
 
 - **WIFI SETUP** — scans and lists networks by signal strength; OK selects.
-  Chinese and long SSIDs render in full (embedded CJK font; over-long names
-  are truncated with a `..` marker, RSSI pinned right). The password is typed
+  Chinese and long SSIDs render in full (embedded 12px CJK font; over-long
+  names are truncated with a `..` marker, RSSI pinned right). The password is typed
   on an on-screen keyboard (qwerty + abc/ABC/symbol pages): UP/DOWN move the
   highlighted key, OK presses it, hold OK submits. On-screen OK and CANCEL
   buttons are part of the keyboard nav row (SPC / OK / CAN, centered);
   CANCEL returns to the network list at any point.
 - **BUS STOP** — a form with two dropdowns plus OK/CANCEL buttons:
-  - **STOP** opens a scrollable list of all 451 stops, sorted by code, with
-    each stop's Chinese name (e.g. `T394 新城大馬路／威尼斯人`); the current
+  - **STOP** opens a scrollable list of all 451 stops, sorted by code. Each
+    12px row shows the code, English name and Chinese name on one line
+    (e.g. `T394  AV. NOVA / VENETIAN  新城大馬路／威尼斯人`); the current
     stop is preselected and `<BACK>` is the first row.
   - **ROUTE** lists every route serving the chosen stop (queried from DSAT);
     `<BACK>` returns without changing.
   - Pick STOP → ROUTE → **OK** saves and reboots; **CANCEL** backs out with
-    nothing saved. The Chinese stop name is shown on the form as you go.
+    nothing saved. The bilingual stop name is shown on the form as you go.
 - **EXIT** — back to the arrivals card (repaints immediately).
 
 Scrolling lists and editors use fast partial e-paper refreshes; a full
@@ -95,7 +96,13 @@ idf.py -p /dev/ttyACM0 build flash monitor
 - `main/bus_api.cc/.h`    — DSAT HTTP + cJSON parsing, ETA math, weather
 - `main/bus_config.cc/.h` — NVS config (ssid/pass/stop/route) + console commands
 - `main/bus_wifi.cc/.h`   — Wi-Fi STA bring-up
-- `main/bus_stops_data.h` — generated stop database: all 451 DSAT stops (do not edit by hand)
+- `main/bus_stops_data.h` — generated stop database: all 451 DSAT stops with
+  English + Chinese names (do not edit by hand)
+- `main/u8g2_font.cc/.h`, `main/u8g2_font_macau.c/.h` — compact u8g2-format
+  WenQuanYi 12px CJK font (15 KB) + decoder; Chinese text renders through it
+- `tools/gen_stop_assets.py` — regenerates the font subset + stop database
+  from `~/macau-bus/data/stops.json` (needs bdfconv from the u8g2 repo and
+  `wenquanyi_9pt.bdf`; see the script header)
 - `components/zectrix_epd`— SSD2683 e-paper driver (ZECTRIX, MIT)
 - `components/hearth_gfx` — 400x300 1bpp canvas + ASCII font (from Hearth)
 - `partitions.csv`, `sdkconfig.defaults` — 16MB flash, octal PSRAM, USB console
