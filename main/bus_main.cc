@@ -9,8 +9,10 @@
 
 #include "esp_log.h"
 #include "esp_sntp.h"
+#include "esp_system.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/event_groups.h"
 #include "freertos/task.h"
 #include "nvs.h"
 #include "nvs_flash.h"
@@ -20,18 +22,22 @@
 
 #include "bus_api.h"
 #include "bus_config.h"
+#include "bus_display.h"
 #include "bus_stops_data.h"
+#include "bus_ui.h"
 #include "bus_wifi.h"
 
 namespace {
 
 constexpr const char* kTag = "bus.main";
-constexpr const char* kVersion = "2.0.0";
+constexpr const char* kVersion = "2.2.0";
 constexpr TickType_t kRefreshInterval = pdMS_TO_TICKS(5 * 60 * 1000);
 constexpr TickType_t kWifiRetryInterval = pdMS_TO_TICKS(30 * 1000);
+constexpr int kRefreshBit = BIT0;
 
-HearthCanvas g_canvas;
+HearthCanvas& g_canvas = BusDisplayCanvas();
 zectrix_epd_handle_t g_epd = nullptr;
+EventGroupHandle_t g_loop_events = nullptr;
 BusConfig g_config;
 
 char g_status[40] = "starting";
@@ -45,19 +51,14 @@ void NowString(char* out, size_t cap) {
     std::snprintf(out, cap, "%02d:%02d", local.tm_hour, local.tm_min);
 }
 
+void NotifyRefresh() {
+    if (g_loop_events != nullptr) {
+        xEventGroupSetBits(g_loop_events, kRefreshBit);
+    }
+}
+
 void Paint() {
-    if (!zectrix_epd_is_powered(g_epd)) {
-        const esp_err_t on = zectrix_epd_power_on(g_epd);
-        if (on != ESP_OK) {
-            ESP_LOGE(kTag, "epd power on failed: %s", esp_err_to_name(on));
-            return;
-        }
-    }
-    const esp_err_t err = zectrix_epd_refresh_full_1bpp(
-        g_epd, g_canvas.data(), g_canvas.size());
-    if (err != ESP_OK) {
-        ESP_LOGE(kTag, "refresh failed: %s", esp_err_to_name(err));
-    }
+    BusDisplayPaint();
 }
 
 void RenderSplash(const char* line2) {
@@ -323,66 +324,71 @@ extern "C" void app_main(void) {
 
     ESP_ERROR_CHECK(BusConfigLoad(&g_config));
     BusConsoleHooks hooks = {};
-    hooks.refresh_now = [] { UpdateOnce(); };
+    hooks.refresh_now = NotifyRefresh;
     BusConfigRegisterConsole(&g_config, hooks);
 
     zectrix_epd_config_t epd_cfg = {};
     zectrix_epd_get_default_config(&epd_cfg);
     ESP_ERROR_CHECK(zectrix_epd_new(&epd_cfg, &g_epd));
+    BusDisplayInit(g_epd);
+
+    g_loop_events = xEventGroupCreate();
+    ESP_ERROR_CHECK(g_loop_events ? ESP_OK : ESP_ERR_NO_MEM);
+
+    // Three-key UI: settings menu is always available, even before Wi-Fi is
+    // configured (it reboots the device after saving).
+    BusUiStart(&g_config, NotifyRefresh);
 
     RenderSplash("starting...");
 
-    if (!BusConfigComplete(g_config)) {
-        ESP_LOGW(kTag, "no wifi configured; waiting for bus-set over USB");
+    bool configured = BusConfigComplete(g_config);
+    if (!configured) {
+        ESP_LOGW(kTag, "no wifi configured; waiting for UI or USB bus-set");
         RenderNoWifi("waiting for config");
-        // Exit only once the config is SAVED to NVS, so a half-entered
-        // bus-set (ssid without pass) never starts a doomed connect.
-        for (;;) {
-            vTaskDelay(pdMS_TO_TICKS(3000));
-            nvs_handle_t handle;
-            if (nvs_open("bus", NVS_READONLY, &handle) == ESP_OK) {
-                char ssid[33] = {};
-                char pass[65] = {};
-                size_t s1 = sizeof(ssid), s2 = sizeof(pass);
-                const bool saved =
-                    nvs_get_str(handle, "ssid", ssid, &s1) == ESP_OK &&
-                    ssid[0] != '\0' &&
-                    nvs_get_str(handle, "pass", pass, &s2) == ESP_OK;
-                nvs_close(handle);
-                if (saved) {
-                    BusConfigLoad(&g_config);
-                    RenderSplash("wifi connecting...");
-                    break;
-                }
-            }
-        }
     }
 
-    const esp_err_t wifi = BusWifiStart(g_config.ssid, g_config.password,
-                                        pdMS_TO_TICKS(20000));
-    if (wifi != ESP_OK) {
-        std::snprintf(g_status, sizeof(g_status), "wifi timeout");
-        RenderNoWifi("wifi connect failed");
-    } else {
-        SntpInit();
-        // Wait briefly for SNTP so the first paint has a clock.
-        int sntp_i = 0;
-        for (; sntp_i < 50 && !esp_sntp_get_sync_status(); sntp_i++) {
-            vTaskDelay(pdMS_TO_TICKS(200));
+    if (configured) {
+        const esp_err_t wifi = BusWifiStart(g_config.ssid, g_config.password,
+                                            pdMS_TO_TICKS(20000));
+        if (wifi != ESP_OK) {
+            std::snprintf(g_status, sizeof(g_status), "wifi timeout");
+            RenderNoWifi("wifi connect failed");
+        } else {
+            SntpInit();
+            // Wait briefly for SNTP so the first paint has a clock.
+            int sntp_i = 0;
+            for (; sntp_i < 50 && !esp_sntp_get_sync_status(); sntp_i++) {
+                vTaskDelay(pdMS_TO_TICKS(200));
+            }
+            ESP_LOGI(kTag, "sntp wait done after %d rounds (status %d)",
+                     sntp_i, esp_sntp_get_sync_status());
+            UpdateOnce();
         }
-        ESP_LOGI(kTag, "sntp wait done after %d rounds (status %d)", sntp_i,
-                 esp_sntp_get_sync_status());
-        UpdateOnce();
     }
 
     for (;;) {
-        // Retry failed updates quickly; refresh every 5 min once connected.
-        vTaskDelay(BusWifiConnected() ? kRefreshInterval : kWifiRetryInterval);
-        if (BusWifiConnected()) {
-            UpdateOnce();
-        } else {
+        const EventBits_t bits = xEventGroupWaitBits(
+            g_loop_events, kRefreshBit, pdTRUE, pdFALSE,
+            BusWifiConnected() ? kRefreshInterval : kWifiRetryInterval);
+
+        // Freshly saved config from USB: reboot into the normal boot path.
+        if (!configured && BusConfigComplete(g_config)) {
+            BusConfigLoad(&g_config);
+            esp_restart();
+        }
+        configured = BusConfigComplete(g_config);
+        if (!configured) {
+            continue;
+        }
+        // Never paint the card while a settings page is open.
+        if (BusUiActive()) {
+            continue;
+        }
+        if (!BusWifiConnected()) {
             std::snprintf(g_status, sizeof(g_status), "wifi down, retrying");
             (void)BusWifiReconnect(kWifiRetryInterval);
+            continue;
         }
+        UpdateOnce();
     }
 }

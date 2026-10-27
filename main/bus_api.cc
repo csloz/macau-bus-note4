@@ -354,3 +354,27 @@ esp_err_t BusWeatherFetch(Weather* wx) {
     cJSON_Delete(doc);
     return ESP_OK;
 }
+
+bool BusApiFindStop(const char* code) {
+    return FindStopData(code) != nullptr;
+}
+
+int BusApiStopRoutes(const char* code, char out[][8], int max_routes) {
+    const bus_stops::Stop* s = FindStopData(code);
+    if (s == nullptr) {
+        return -1;
+    }
+    int n = 0;
+    const char* p = s->routes;
+    while (*p && n < max_routes) {
+        const char* comma = std::strchr(p, ',');
+        const size_t len = comma ? static_cast<size_t>(comma - p)
+                                 : std::strlen(p);
+        if (len > 0 && len < 8) {
+            std::snprintf(out[n], 8, "%.*s", static_cast<int>(len), p);
+            n++;
+        }
+        p = comma ? comma + 1 : p + std::strlen(p);
+    }
+    return n;
+}

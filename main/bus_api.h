@@ -34,3 +34,10 @@ esp_err_t BusApiFetchView(const char* route, const char* stop, BusView* out);
 // Current weather for the Cotai area. Returns ESP_OK or an error; on error
 // wx->valid is false (weather is decorative, never blocks bus data).
 esp_err_t BusWeatherFetch(Weather* wx);
+
+// True when the stop code exists in the embedded stop database.
+bool BusApiFindStop(const char* code);
+
+// Parse the stop's route list (comma-separated in the DB) into out[i].
+// Returns the count, or -1 when the stop is unknown.
+int BusApiStopRoutes(const char* code, char out[][8], int max_routes);

@@ -1,6 +1,7 @@
 #include "bus_wifi.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 #include "esp_event.h"
@@ -61,11 +62,16 @@ esp_err_t Connect(uint32_t timeout_ms) {
 
 }  // namespace
 
-esp_err_t BusWifiStart(const char* ssid, const char* password,
-                       uint32_t timeout_ms) {
-    std::snprintf(g_ssid, sizeof(g_ssid), "%s", ssid);
-    std::snprintf(g_pass, sizeof(g_pass), "%s", password);
+namespace {
 
+bool g_wifi_inited = false;
+
+// One-time netif/event-loop/wifi init, shared by BusWifiStart and
+// BusWifiScan (the UI may scan before any credentials exist).
+void EnsureWifiInited() {
+    if (g_wifi_inited) {
+        return;
+    }
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     esp_netif_create_default_wifi_sta();
@@ -81,10 +87,20 @@ esp_err_t BusWifiStart(const char* ssid, const char* password,
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
                                                EventHandler, nullptr));
 
-    wifi_storage_t storage = WIFI_STORAGE_RAM;
-    ESP_ERROR_CHECK(esp_wifi_set_storage(storage));
+    ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_start());
+    g_wifi_inited = true;
+}
+
+}  // namespace
+
+esp_err_t BusWifiStart(const char* ssid, const char* password,
+                       uint32_t timeout_ms) {
+    std::snprintf(g_ssid, sizeof(g_ssid), "%s", ssid);
+    std::snprintf(g_pass, sizeof(g_pass), "%s", password);
+
+    EnsureWifiInited();
     return Connect(timeout_ms);
 }
 
@@ -100,4 +116,76 @@ bool BusWifiConnected() {
         return false;
     }
     return (xEventGroupGetBits(g_events) & kConnectedBit) != 0;
+}
+
+esp_err_t BusWifiScan(BusWifiAp* out, int max, int* count) {
+    *count = 0;
+    if (out == nullptr || max <= 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    EnsureWifiInited();
+
+    wifi_scan_config_t scan = {};
+    scan.show_hidden = false;
+    scan.scan_type = WIFI_SCAN_TYPE_ACTIVE;
+    // ESP_ERR_WIFI_STATE: a connect is in flight; the caller can retry.
+    const esp_err_t err = esp_wifi_scan_start(&scan, true);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    uint16_t ap_num = 0;
+    esp_wifi_scan_get_ap_num(&ap_num);
+    if (ap_num == 0) {
+        return ESP_OK;
+    }
+    // Cap the record buffer; hidden/empty SSIDs are dropped below.
+    const uint16_t want = ap_num > 60 ? 60 : ap_num;
+    auto* records = static_cast<wifi_ap_record_t*>(
+        std::malloc(sizeof(wifi_ap_record_t) * want));
+    if (records == nullptr) {
+        return ESP_ERR_NO_MEM;
+    }
+    uint16_t got = want;
+    const esp_err_t get = esp_wifi_scan_get_ap_records(&got, records);
+    if (get != ESP_OK) {
+        std::free(records);
+        return get;
+    }
+
+    // Sort by RSSI (records are roughly sorted already; make it explicit).
+    for (uint16_t i = 1; i < got; i++) {
+        const wifi_ap_record_t key = records[i];
+        int16_t j = static_cast<int16_t>(i - 1);
+        while (j >= 0 && records[j].rssi < key.rssi) {
+            records[j + 1] = records[j];
+            j--;
+        }
+        records[j + 1] = key;
+    }
+
+    int n = 0;
+    for (uint16_t i = 0; i < got && n < max; i++) {
+        const char* ssid =
+            reinterpret_cast<const char*>(records[i].ssid);
+        if (ssid[0] == '\0') {
+            continue;  // hidden network
+        }
+        bool dup = false;
+        for (int k = 0; k < n; k++) {
+            if (std::strcmp(out[k].ssid, ssid) == 0) {
+                dup = true;
+                break;
+            }
+        }
+        if (dup) {
+            continue;
+        }
+        std::snprintf(out[n].ssid, sizeof(out[n].ssid), "%s", ssid);
+        out[n].rssi = records[i].rssi;
+        n++;
+    }
+    std::free(records);
+    *count = n;
+    return ESP_OK;
 }
