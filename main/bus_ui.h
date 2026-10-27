@@ -10,4 +10,12 @@
 // task) so the app can repaint immediately.
 void BusUiStart(BusConfig* config, void (*on_exit)());
 
+// Programmatically open the settings menu (console `bus-ui` command); does
+// nothing if the UI is already active.
+void BusUiOpenMenu();
+
+// Inject a synthetic key event (console `bus-key` command) for testing:
+// key = 0 up, 1 down, 2 ok; long = press-and-hold instead of click.
+void BusUiInjectKey(int key, bool long_press);
+
 bool BusUiActive();

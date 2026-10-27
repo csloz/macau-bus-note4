@@ -8,6 +8,7 @@
 #include <ctime>
 
 #include "esp_log.h"
+#include "esp_console.h"
 #include "esp_sntp.h"
 #include "esp_system.h"
 #include "esp_timer.h"
@@ -30,7 +31,7 @@
 namespace {
 
 constexpr const char* kTag = "bus.main";
-constexpr const char* kVersion = "2.2.0";
+constexpr const char* kVersion = "2.4.0";
 constexpr TickType_t kRefreshInterval = pdMS_TO_TICKS(5 * 60 * 1000);
 constexpr TickType_t kWifiRetryInterval = pdMS_TO_TICKS(30 * 1000);
 constexpr int kRefreshBit = BIT0;
@@ -338,6 +339,46 @@ extern "C" void app_main(void) {
     // Three-key UI: settings menu is always available, even before Wi-Fi is
     // configured (it reboots the device after saving).
     BusUiStart(&g_config, NotifyRefresh);
+
+    // Console escape hatch to open the settings menu (handy for testing).
+    static const esp_console_cmd_t ui_cmd = {
+        "bus-ui", "Open the on-device settings menu", nullptr,
+        +[](int, char**) -> int {
+            BusUiOpenMenu();
+            return 0;
+        },
+        nullptr, nullptr, nullptr};
+    esp_console_cmd_register(&ui_cmd);
+
+    // Synthetic key events so the UI can be driven over the console.
+    static const esp_console_cmd_t key_cmd = {
+        "bus-key", "Inject a key: up|down|ok [long]", nullptr,
+        +[](int argc, char** argv) -> int {
+            if (argc < 2) {
+                printf("usage: bus-key up|down|ok [long]\n");
+                return 1;
+            }
+            int key = -1;
+            if (strcmp(argv[1], "up") == 0) {
+                key = 0;
+            } else if (strcmp(argv[1], "down") == 0) {
+                key = 1;
+            } else if (strcmp(argv[1], "ok") == 0) {
+                key = 2;
+            }
+            if (key < 0) {
+                printf("unknown key '%s'\n", argv[1]);
+                return 1;
+            }
+            const bool long_press =
+                argc > 2 && strcmp(argv[2], "long") == 0;
+            BusUiInjectKey(key, long_press);
+            printf("injected %s%s\n", argv[1],
+                   long_press ? " (long)" : "");
+            return 0;
+        },
+        nullptr, nullptr, nullptr};
+    esp_console_cmd_register(&key_cmd);
 
     RenderSplash("starting...");
 

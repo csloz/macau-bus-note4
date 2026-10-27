@@ -28,13 +28,20 @@ Hold **OK** on the normal card to open the settings menu (UP/DOWN to pick,
 OK to open, hold OK to exit back to the card):
 
 - **WIFI SETUP** — scans and lists networks by signal strength; OK selects.
-  The password is typed on an on-screen keyboard (qwerty + abc/ABC/symbol
-  pages): UP/DOWN move the highlighted key, OK presses it, hold OK submits.
-  On-screen OK and CANCEL buttons are part of the keyboard; CANCEL returns to
-  the network list at any point.
-- **BUS STOP** — same on-screen keyboard, letters/digits pages; the code is
-  validated against the embedded 451-stop database, then a picker lists every
-  route serving that stop; pick one and it saves + reboots.
+  Chinese and long SSIDs render in full (embedded CJK font; over-long names
+  are truncated with a `..` marker, RSSI pinned right). The password is typed
+  on an on-screen keyboard (qwerty + abc/ABC/symbol pages): UP/DOWN move the
+  highlighted key, OK presses it, hold OK submits. On-screen OK and CANCEL
+  buttons are part of the keyboard nav row (SPC / OK / CAN, centered);
+  CANCEL returns to the network list at any point.
+- **BUS STOP** — a form with two dropdowns plus OK/CANCEL buttons:
+  - **STOP** opens a scrollable list of all 451 stops, sorted by code, with
+    each stop's Chinese name (e.g. `T394 新城大馬路／威尼斯人`); the current
+    stop is preselected and `<BACK>` is the first row.
+  - **ROUTE** lists every route serving the chosen stop (queried from DSAT);
+    `<BACK>` returns without changing.
+  - Pick STOP → ROUTE → **OK** saves and reboots; **CANCEL** backs out with
+    nothing saved. The Chinese stop name is shown on the form as you go.
 - **EXIT** — back to the arrivals card (repaints immediately).
 
 Scrolling lists and editors use fast partial e-paper refreshes; a full

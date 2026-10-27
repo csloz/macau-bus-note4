@@ -1,3 +1,8 @@
+// On-device settings UI for the NOTE4 bus board.
+//
+// Pages: card (main loop) -> menu -> wifi list -> password keyboard,
+// and stop form (STOP + ROUTE dropdown fields, OK/CANCEL buttons).
+// Chinese text renders via the embedded 16x16 CJK bitmap font.
 #include "bus_ui.h"
 
 #include <cstdio>
@@ -9,11 +14,15 @@
 #include "freertos/queue.h"
 #include "freertos/task.h"
 
+#include "hearth_canvas.h"
+
 #include "bus_api.h"
 #include "bus_buttons.h"
 #include "bus_config.h"
 #include "bus_display.h"
+#include "bus_stops_data.h"
 #include "bus_wifi.h"
+#include "cjk_font_16x16.h"
 
 namespace {
 
@@ -27,7 +36,122 @@ constexpr int kListY0 = kHeaderH;
 constexpr int kListY1 = kListY0 + 8 * kRowH + 8;
 constexpr int kRowsVisible = 8;
 
-// ---------- on-screen keyboard geometry ----------
+// ---------- UTF-8 / CJK text drawing ----------
+//
+// ASCII renders with the built-in 8x16 font; CJK codepoints (U+2E80..U+9FFF)
+// render from the embedded 16x16 bitmap font, vertically centered on the
+// scale-2 ASCII line (32 px). Everything else draws as a hollow box.
+
+int DecodeCp(const char* s, int* len) {
+    const uint8_t b = static_cast<uint8_t>(s[0]);
+    if (b < 0x80) {
+        *len = 1;
+        return b;
+    }
+    if ((b & 0xE0) == 0xC0 && (static_cast<uint8_t>(s[1]) & 0xC0) == 0x80) {
+        *len = 2;
+        return ((b & 0x1F) << 6) | (s[1] & 0x3F);
+    }
+    if ((b & 0xF0) == 0xE0 && (static_cast<uint8_t>(s[1]) & 0xC0) == 0x80 &&
+        (static_cast<uint8_t>(s[2]) & 0xC0) == 0x80) {
+        *len = 3;
+        return ((b & 0x0F) << 12) | ((s[1] & 0x3F) << 6) | (s[2] & 0x3F);
+    }
+    *len = 1;
+    return 0xFFFD;  // replacement character
+}
+
+void DrawCjkGlyph(int cp, int x, int y, bool inverted) {
+    auto& c = BusDisplayCanvas();
+    if (cp < kCjkFirst || cp > kCjkLast) {
+        // Unknown codepoint: hollow box placeholder.
+        c.Rect(x + 2, y + 8, 12, 12, !inverted);
+        return;
+    }
+    const uint8_t* g =
+        &kCjkGlyphs[(cp - kCjkFirst) * kCjkGlyphBytes];
+    const int gy = y + 8;  // center the 16px glyph on the 32px text line
+    for (int row = 0; row < 16; row++) {
+        if (gy + row < 0 || gy + row >= HearthCanvas::kHeight) continue;
+        const uint8_t hi = g[row * 2];
+        const uint8_t lo = g[row * 2 + 1];
+        if (hi == 0 && lo == 0) continue;
+        for (int bit = 0; bit < 16; bit++) {
+            const int px = x + bit;
+            if (px < 0 || px >= HearthCanvas::kWidth) continue;
+            const bool ink =
+                (bit < 8) ? ((hi >> (7 - bit)) & 1) : ((lo >> (15 - bit)) & 1);
+            if (ink) {
+                c.Pixel(px, gy + row, !inverted);
+            }
+        }
+    }
+}
+
+// Draw a UTF-8 string (ASCII scale-2 + CJK 16x16) starting at (x, y).
+// Truncates after max_px pixels. Returns the end x.
+int TextUtf8(int x, int y, const char* s, int max_px, bool inverted) {
+    auto& c = BusDisplayCanvas();
+    int i = 0;
+    while (s[i] != '\0') {
+        int len = 0;
+        const int cp = DecodeCp(s + i, &len);
+        if (x + 16 > max_px) break;
+        if (cp < 0x80) {
+            char buf[2] = {static_cast<char>(cp), '\0'};
+            c.Text(x, y, buf, 2, inverted);
+        } else {
+            DrawCjkGlyph(cp, x, y, inverted);
+        }
+        x += 16;
+        i += len;
+    }
+    return x;
+}
+
+// Scale-1 variant: ASCII 8px wide, CJK 16px wide (16px tall, no centering).
+int TextUtf8Small(int x, int y, const char* s, int max_px) {
+    auto& c = BusDisplayCanvas();
+    int i = 0;
+    while (s[i] != '\0') {
+        int len = 0;
+        const int cp = DecodeCp(s + i, &len);
+        if (cp < 0x80) {
+            if (x + 8 > max_px) break;
+            char buf[2] = {static_cast<char>(cp), '\0'};
+            c.Text(x, y, buf, 1, false);
+            x += 8;
+        } else {
+            if (x + 16 > max_px) break;
+            const uint8_t* g = (cp >= kCjkFirst && cp <= kCjkLast)
+                                   ? &kCjkGlyphs[(cp - kCjkFirst) * kCjkGlyphBytes]
+                                   : nullptr;
+            if (g != nullptr) {
+                for (int row = 0; row < 16; row++) {
+                    if (y + row >= HearthCanvas::kHeight) break;
+                    const uint8_t hi = g[row * 2];
+                    const uint8_t lo = g[row * 2 + 1];
+                    for (int bit = 0; bit < 16; bit++) {
+                        const int px = x + bit;
+                        if (px >= HearthCanvas::kWidth) break;
+                        const bool ink = (bit < 8) ? ((hi >> (7 - bit)) & 1)
+                                                   : ((lo >> (15 - bit)) & 1);
+                        if (ink) {
+                            c.Pixel(px, y + row, true);
+                        }
+                    }
+                }
+            } else {
+                c.Rect(x + 1, y + 2, 14, 12, true);
+            }
+            x += 16;
+        }
+        i += len;
+    }
+    return x;
+}
+
+// ---------- keyboard cell model ----------
 constexpr int kKbCols = 10;
 constexpr int kKbRows = 4;          // 3 char rows + nav row
 constexpr int kKbCellW = 32;
@@ -36,14 +160,13 @@ constexpr int kKbPitchY = 36;
 constexpr int kKbX0 = (kW - kKbCols * kKbCellW) / 2;  // 40
 constexpr int kKbY0 = 84;
 
-// Cell actions.
-constexpr uint8_t kActChar = 0;    // type cell->ch
-constexpr uint8_t kActMode = 1;    // cycle charset mode
-constexpr uint8_t kActDel = 2;     // backspace
+constexpr uint8_t kActChar = 0;
+constexpr uint8_t kActMode = 1;
+constexpr uint8_t kActDel = 2;
 constexpr uint8_t kActSpace = 3;
-constexpr uint8_t kActOk = 4;      // submit
-constexpr uint8_t kActCancel = 5;  // back out
-constexpr uint8_t kActNone = 6;    // filler, skipped by the cursor
+constexpr uint8_t kActOk = 4;
+constexpr uint8_t kActCancel = 5;
+constexpr uint8_t kActNone = 6;
 
 struct KbCell {
     const char* label;
@@ -57,10 +180,8 @@ constexpr KbCell Mode(const char* label) { return {label, 0, kActMode}; }
 constexpr KbCell Del() { return {"DEL", 0, kActDel}; }
 constexpr KbCell Act(uint8_t action, const char* label) { return {label, 0, action}; }
 
-// Keyboard modes. The stop editor uses UPPER + DIGITS only.
-enum KbMode { KB_LOWER = 0, KB_UPPER, KB_SYM1, KB_SYM2, KB_DIGITS, KB_MODE_COUNT };
+enum KbMode { KB_LOWER = 0, KB_UPPER, KB_SYM1, KB_SYM2, KB_MODE_COUNT };
 
-// 3 content rows x 10 cols per mode. The cursor skips kActNone cells.
 constexpr KbCell kLowerRows[3][kKbCols] = {
     {Key("q",'q'), Key("w",'w'), Key("e",'e'), Key("r",'r'), Key("t",'t'),
      Key("y",'y'), Key("u",'u'), Key("i",'i'), Key("o",'o'), Key("p",'p')},
@@ -93,38 +214,28 @@ constexpr KbCell kSym2Rows[3][kKbCols] = {
     {Mode("abc"), None(), None(), None(), None(), None(), None(), None(),
      Del(), None()},
 };
-constexpr KbCell kDigitsRows[3][kKbCols] = {
-    {Key("1",'1'), Key("2",'2'), Key("3",'3'), Key("4",'4'), Key("5",'5'),
-     Key("6",'6'), Key("7",'7'), Key("8",'8'), Key("9",'9'), Key("0",'0')},
-    {Key("-",'-'), Key("_",'_'), Key("/",'/'), Key(".",','), Key(":",':'),
-     None(), None(), None(), None(), None()},
-    {Mode("ABC"), None(), None(), None(), None(), None(), None(), None(),
-     Del(), None()},
-};
 
-// Nav row (same for every mode): [SPC x4] [OK x2] [CAN x2], centered.
+// Nav row: [SPC x4] [OK x2] [CAN x2] centered, fillers at the edges.
 constexpr KbCell kNavRow[kKbCols] = {
     None(), Act(kActSpace, "SPC"), Act(kActSpace, "SPC"), Act(kActSpace, "SPC"),
     Act(kActSpace, "SPC"), Act(kActOk, "OK"), Act(kActOk, "OK"),
     Act(kActCancel, "CAN"), Act(kActCancel, "CAN"), None(),
 };
 
-// Editor state.
+// Editor state (keyboard is used for the Wi-Fi password only).
 KbMode g_kb_mode = KB_LOWER;
-bool g_kb_stop = false;   // uppercase/digits editor for stop codes
-int g_kb_sel = 0;         // linear index over selectable cells (row-major)
+int g_kb_sel = 0;        // linear index over selectable cells (row-major)
 char g_kb_text[65] = {};
 int g_kb_len = 0;
-char g_kb_title[24] = {};
-char g_kb_sub[48] = {};
 
 enum class Page {
     Card,        // normal display (owned by the main loop)
     Menu,
     WifiList,
-    PassEdit,
-    StopEdit,
-    RouteList,
+    PassEdit,    // on-screen keyboard
+    StopForm,    // STOP + ROUTE dropdown fields with OK / CANCEL buttons
+    StopList,    // dropdown: all stops
+    RouteList,   // dropdown: routes at the chosen stop
     Message,     // transient status text, then returns to g_msg_back
 };
 
@@ -147,10 +258,24 @@ int g_ap_count = 0;
 int g_wifi_sel = 0;
 char g_chosen_ssid[33] = {};
 
-// Route list
+// Stop form: item order = STOP field, ROUTE field, OK, CANCEL.
+int g_form_sel = 0;
+constexpr int kFormItemStop = 0;
+constexpr int kFormItemRoute = 1;
+constexpr int kFormItemOk = 2;
+constexpr int kFormItemCancel = 3;
+constexpr int kFormItemCount = 4;
+char g_form_route[8] = {};  // route chosen in the dropdown, shown in the field
+
+// Stop list (dropdown over all stops, sorted by code).
+int g_stop_order[512];
+int g_stop_count = 0;
+int g_stop_sel = 0;   // 0 = <BACK>, 1.. = g_stop_order[sel-1]
+
+// Route list (dropdown over routes at the chosen stop).
 char g_routes[12][8];
 int g_route_count = 0;
-int g_route_sel = 0;
+int g_route_sel = 0;  // 0 = <BACK>, 1.. = g_routes[sel-1]
 
 bool g_active = false;
 QueueHandle_t g_events = nullptr;
@@ -163,7 +288,6 @@ const KbCell* ModeRows(KbMode mode) {
         case KB_UPPER: return &kUpperRows[0][0];
         case KB_SYM1: return &kSym1Rows[0][0];
         case KB_SYM2: return &kSym2Rows[0][0];
-        case KB_DIGITS: return &kDigitsRows[0][0];
         default: return &kLowerRows[0][0];
     }
 }
@@ -209,16 +333,8 @@ void SelToCell(int sel, int* row, int* col) {
     *col = 0;
 }
 
-KbMode NextMode(KbMode mode) {
-    if (g_kb_stop) {
-        // Stop codes: letters <-> digits only.
-        return mode == KB_UPPER ? KB_DIGITS : KB_UPPER;
-    }
-    return static_cast<KbMode>((mode + 1) % KB_MODE_COUNT);
-}
-
 void CycleMode() {
-    g_kb_mode = NextMode(g_kb_mode);
+    g_kb_mode = static_cast<KbMode>((g_kb_mode + 1) % KB_MODE_COUNT);
     // Park the cursor on the mode key (row 2, col 0) of the new layout.
     int n = 0;
     for (int r = 0; r < kKbRows; r++) {
@@ -242,7 +358,7 @@ void Header(const char* title) {
 }
 
 void Hint(const char* text) {
-    BusDisplayCanvas().Text(12, 280, text, 1, false);
+    BusDisplayCanvas().Text(12, 284, text, 1, false);
 }
 
 void PaintMenu(bool full) {
@@ -273,12 +389,25 @@ void PaintWifiList(bool full) {
     if (g_ap_count > kRowsVisible && first > g_ap_count - kRowsVisible) {
         first = g_ap_count - kRowsVisible;
     }
-    char line[44];
+    char rssi[8];
     for (int row = 0; row < kRowsVisible && first + row < g_ap_count; row++) {
         const int idx = first + row;
         const BusWifiAp& ap = g_aps[idx];
-        std::snprintf(line, sizeof(line), "%.*s %d", 30, ap.ssid, ap.rssi);
-        c.Text(12, kListY0 + row * kRowH, line, 2, idx == g_wifi_sel);
+        const int y = kListY0 + row * kRowH;
+        const bool inv = idx == g_wifi_sel;
+        if (inv) {
+            c.FillRect(0, y, kW, kRowH, true);
+        }
+        // RSSI pinned to the right edge; SSID gets the rest, truncated
+        // with a ".." marker when it does not fit.
+        std::snprintf(rssi, sizeof(rssi), "%d", ap.rssi);
+        const int rx = kW - 12 - c.TextWidth(rssi, 2);
+        const int max_w = rx - 44;
+        const int end = TextUtf8(12, y, ap.ssid, max_w, inv);
+        if (ap.ssid[0] != '\0' && end >= max_w) {
+            c.Text(rx - 40, y, "..", 2, inv);
+        }
+        c.Text(rx, y, rssi, 2, inv);
     }
     Hint("OK=select  HOLD OK=back");
     if (full) BusDisplayPaint(); else BusDisplayPaintRows(kListY0, kListY1);
@@ -287,24 +416,56 @@ void PaintWifiList(bool full) {
 void DrawKbCell(int row, int col, bool selected) {
     auto& c = BusDisplayCanvas();
     const KbCell* cell = CellAt(row, col);
-    const int x = kKbX0 + col * kKbCellW;
-    const int y = kKbY0 + row * kKbPitchY;
     if (cell->action == kActNone) {
         return;
     }
+    const int x = kKbX0 + col * kKbCellW;
+    const int y = kKbY0 + row * kKbPitchY;
+    const int bw = kKbCellW - 2;
     if (selected) {
-        c.FillRect(x, y, kKbCellW - 2, kKbCellH, true);
-        c.Text(x + 8, y + 9, cell->label, 2, true);
+        c.FillRect(x, y, bw, kKbCellH, true);
     } else {
-        c.Rect(x, y, kKbCellW - 2, kKbCellH, true);
-        c.Text(x + 8, y + 9, cell->label, 2, false);
+        c.Rect(x, y, bw, kKbCellH, true);
     }
+    // Center the label. Multi-char labels render at scale 1 so "CAN",
+    // "SPC", "DEL" and mode keys fit inside a 30px cell with breathing
+    // room; single characters stay at scale 2.
+    const int scale = c.TextWidth(cell->label, 2) > bw - 6 ? 1 : 2;
+    const int lw = c.TextWidth(cell->label, scale);
+    const int tx = x + (bw - lw) / 2;
+    const int ty = y + (kKbCellH - (scale == 2 ? 16 : 8)) / 2;
+    c.Text(tx, ty, cell->label, scale, selected);
 }
 
 void PaintKbPage(bool full) {
     auto& c = BusDisplayCanvas();
-    Header(g_kb_title);
-    c.Text(12, 48, g_kb_sub, 1, false);
+    Header("WIFI PASSWORD");
+
+    // Full network name (ASCII + CJK), wrapped under the header.
+    c.Text(12, 44, "FOR:", 1, false);
+    int nx = 44;
+    int ny = 44;
+    const char* s = g_chosen_ssid;
+    int i = 0;
+    while (s[i] != '\0') {
+        int len = 0;
+        const int cp = DecodeCp(s + i, &len);
+        const int w = cp < 0x80 ? 8 : 16;
+        if (nx + w > kW - 12) {
+            nx = 44;
+            ny += 14;
+            if (ny > 70) break;  // two lines is enough; the rest is clipped
+        }
+        if (cp < 0x80) {
+            char buf[2] = {s[i], '\0'};
+            c.Text(nx, ny, buf, 1, false);
+            nx += 8;
+        } else {
+            TextUtf8Small(nx, ny, s + i, nx + 16);
+            nx += 16;
+        }
+        i += len;
+    }
 
     int sr, sc;
     SelToCell(g_kb_sel, &sr, &sc);
@@ -327,20 +488,118 @@ void PaintKbPage(bool full) {
     if (full) BusDisplayPaint(); else BusDisplayPaintRows(kHeaderH, 300);
 }
 
+// ---------- stop form (dropdowns + OK / CANCEL) ----------
+
+void PaintStopForm(bool full) {
+    auto& c = BusDisplayCanvas();
+    Header("BUS STOP");
+
+    const bool stop_sel = g_form_sel == kFormItemStop;
+    const bool route_sel = g_form_sel == kFormItemRoute;
+
+    // STOP field
+    c.Text(16, 54, "STOP", 2, false);
+    if (stop_sel) {
+        c.FillRect(130, 48, 140, 36, true);
+    } else {
+        c.Rect(130, 48, 140, 36, true);
+    }
+    c.Text(142, 54, g_config->stop[0] ? g_config->stop : "--", 2, stop_sel);
+    c.Text(278, 54, "v", 2, false);
+
+    // ROUTE field
+    c.Text(16, 102, "ROUTE", 2, false);
+    if (route_sel) {
+        c.FillRect(130, 96, 140, 36, true);
+    } else {
+        c.Rect(130, 96, 140, 36, true);
+    }
+    c.Text(142, 102, g_form_route[0] ? g_form_route : "--", 2, route_sel);
+    c.Text(278, 102, "v", 2, false);
+
+    // Chinese name of the chosen stop.
+    for (int i = 0; i < g_stop_count; i++) {
+        const auto& st = bus_stops::kStops[g_stop_order[i]];
+        if (std::strcmp(st.code, g_config->stop) == 0) {
+            c.Text(16, 146, "NAME:", 1, false);
+            TextUtf8Small(60, 142, st.name, kW - 16);
+            break;
+        }
+    }
+
+    // OK / CANCEL buttons
+    const bool ok_sel = g_form_sel == kFormItemOk;
+    const bool can_sel = g_form_sel == kFormItemCancel;
+    if (ok_sel) {
+        c.FillRect(60, 196, 110, 44, true);
+    } else {
+        c.Rect(60, 196, 110, 44, true);
+    }
+    c.Text(60 + (110 - c.TextWidth("OK", 2)) / 2, 202, "OK", 2, ok_sel);
+    if (can_sel) {
+        c.FillRect(200, 196, 150, 44, true);
+    } else {
+        c.Rect(200, 196, 150, 44, true);
+    }
+    c.Text(200 + (150 - c.TextWidth("CANCEL", 1)) / 2, 214, "CANCEL", 1,
+           can_sel);
+
+    Hint("UP/DOWN=field  OK=open/act");
+    if (full) BusDisplayPaint(); else BusDisplayPaintRows(kHeaderH, 300);
+}
+
+void PaintStopList(bool full) {
+    auto& c = BusDisplayCanvas();
+    Header("PICK STOP");
+    const int total = g_stop_count + 1;  // + <BACK>
+    int first = g_stop_sel - (kRowsVisible - 1);
+    if (first < 0) first = 0;
+    if (total > kRowsVisible && first > total - kRowsVisible) {
+        first = total - kRowsVisible;
+    }
+    for (int row = 0; row < kRowsVisible && first + row < total; row++) {
+        const int idx = first + row;
+        const int y = kListY0 + row * kRowH;
+        const bool sel = idx == g_stop_sel;
+        if (sel) {
+            c.FillRect(0, y, kW, kRowH, true);
+        }
+        if (idx == 0) {
+            c.Text(12, y, "<BACK>", 2, sel);
+            continue;
+        }
+        const auto& st = bus_stops::kStops[g_stop_order[idx - 1]];
+        c.Text(12, y, st.code, 2, sel);
+        TextUtf8(92, y, st.name, kW - 12, sel);
+    }
+    Hint("OK=pick  HOLD OK=back");
+    if (full) BusDisplayPaint(); else BusDisplayPaintRows(kListY0, 300);
+}
+
 void PaintRouteList(bool full) {
     auto& c = BusDisplayCanvas();
-    Header("ROUTE");
+    Header("PICK ROUTE");
     char sub[48];
     std::snprintf(sub, sizeof(sub), "ROUTES AT %s", g_config->stop);
-    c.Text(12, kHeaderH + 6, sub, 1, false);
-    const int first = g_route_sel < kRowsVisible ? 0 : g_route_sel - kRowsVisible + 1;
-    for (int i = first; i < g_route_count; i++) {
+    c.Text(12, kHeaderH + 4, sub, 1, false);
+    const int total = g_route_count + 1;  // + <BACK>
+    int first = g_route_sel - (kRowsVisible - 1);
+    if (first < 0) first = 0;
+    if (total > kRowsVisible && first > total - kRowsVisible) {
+        first = total - kRowsVisible;
+    }
+    for (int i = first; i < total; i++) {
         const int row = i - first;
         if (row >= kRowsVisible) break;
-        c.Text(24, kListY0 + 16 + row * kRowH, g_routes[i], 2,
-               i == g_route_sel);
+        const int y = kListY0 + 24 + row * kRowH;
+        const bool sel = i == g_route_sel;
+        if (i == 0) {
+            c.Text(12, y, "<BACK>", 2, sel);
+        } else {
+            c.Text(24, y, g_routes[i - 1], 2, sel);
+        }
     }
-    Hint("OK=select  HOLD OK=back");
+    Hint("OK=pick  HOLD OK=back");
     if (full) BusDisplayPaint(); else BusDisplayPaintRows(kListY0, 300);
 }
 
@@ -355,6 +614,19 @@ void ShowMessage(const char* text, Page back, int ms) {
     BusDisplayPaint();
 }
 
+void RestoreAfterMessage() {
+    g_page = g_msg_back;
+    switch (g_page) {
+        case Page::Menu: PaintMenu(true); break;
+        case Page::WifiList: PaintWifiList(false); break;
+        case Page::PassEdit: PaintKbPage(false); break;
+        case Page::StopForm: PaintStopForm(false); break;
+        case Page::StopList: PaintStopList(false); break;
+        case Page::RouteList: PaintRouteList(false); break;
+        default: PaintMenu(true); break;
+    }
+}
+
 // ---------- actions ----------
 
 void SaveAndReboot(const char* what) {
@@ -365,26 +637,49 @@ void SaveAndReboot(const char* what) {
     esp_restart();
 }
 
-void ConfirmStop() {
-    if (!BusApiFindStop(g_config->stop)) {
-        ESP_LOGW(kTag, "unknown stop '%s'", g_config->stop);
-        ShowMessage("UNKNOWN STOP", Page::StopEdit, 1800);
-        return;
-    }
+// Load the routes serving g_config->stop; default the form's route to the
+// configured route when it serves the stop, else the first route.
+void LoadRoutesForStop() {
     g_route_count = BusApiStopRoutes(g_config->stop, g_routes, 12);
-    if (g_route_count <= 0) {
-        ShowMessage("NO ROUTES AT STOP", Page::StopEdit, 1800);
+    if (g_route_count < 0) {
+        g_route_count = 0;
+    }
+    g_form_route[0] = '\0';
+    if (g_route_count == 0) {
         return;
     }
-    g_route_sel = 0;
+    std::snprintf(g_form_route, sizeof(g_form_route), "%.7s", g_routes[0]);
     for (int i = 0; i < g_route_count; i++) {
         if (std::strcmp(g_routes[i], g_config->route) == 0) {
-            g_route_sel = i;
+            std::snprintf(g_form_route, sizeof(g_form_route), "%.7s",
+                          g_config->route);
             break;
         }
     }
-    g_page = Page::RouteList;
-    PaintRouteList(true);
+}
+
+void SortStopOrder() {
+    g_stop_count = static_cast<int>(bus_stops::kStopCount);
+    if (g_stop_count >
+        static_cast<int>(sizeof(g_stop_order) / sizeof(g_stop_order[0]))) {
+        g_stop_count =
+            static_cast<int>(sizeof(g_stop_order) / sizeof(g_stop_order[0]));
+    }
+    for (int i = 0; i < g_stop_count; i++) {
+        g_stop_order[i] = i;
+    }
+    // Insertion sort by stop code (n=451, done once at boot).
+    for (int i = 1; i < g_stop_count; i++) {
+        const int key = g_stop_order[i];
+        int j = i - 1;
+        while (j >= 0 &&
+               std::strcmp(bus_stops::kStops[g_stop_order[j]].code,
+                           bus_stops::kStops[key].code) > 0) {
+            g_stop_order[j + 1] = g_stop_order[j];
+            j--;
+        }
+        g_stop_order[j + 1] = key;
+    }
 }
 
 void StartWifiList() {
@@ -410,21 +705,22 @@ void StartWifiList() {
     PaintWifiList(true);
 }
 
-void StartKb(bool for_stop) {
-    g_kb_stop = for_stop;
+void StartPassEdit() {
+    std::snprintf(g_chosen_ssid, sizeof(g_chosen_ssid), "%.32s",
+                  g_aps[g_wifi_sel].ssid);
     g_kb_len = 0;
     g_kb_text[0] = '\0';
-    g_kb_mode = for_stop ? KB_UPPER : KB_LOWER;
+    g_kb_mode = KB_LOWER;
     g_kb_sel = 0;
-    if (for_stop) {
-        std::snprintf(g_kb_title, sizeof(g_kb_title), "BUS STOP");
-        std::snprintf(g_kb_sub, sizeof(g_kb_sub), "CODE (E.G. T394)");
-    } else {
-        std::snprintf(g_kb_title, sizeof(g_kb_title), "WIFI PASSWORD");
-        std::snprintf(g_kb_sub, sizeof(g_kb_sub), "FOR %s", g_chosen_ssid);
-    }
-    g_page = for_stop ? Page::StopEdit : Page::PassEdit;
+    g_page = Page::PassEdit;
     PaintKbPage(true);
+}
+
+void StartStopForm() {
+    g_form_sel = kFormItemStop;
+    std::snprintf(g_form_route, sizeof(g_form_route), "%.7s", g_config->route);
+    g_page = Page::StopForm;
+    PaintStopForm(true);
 }
 
 void ExitToCard() {
@@ -438,34 +734,25 @@ void ExitToCard() {
 
 // ---------- keyboard events ----------
 
-// Submit the typed text (on-screen OK or physical HOLD OK).
 void KbSubmit() {
-    if (g_kb_len == 0) {
-        ShowMessage("EMPTY - TYPE SOMETHING", g_page, 1500);
+    // Require at least one non-space character before saving.
+    bool has_text = false;
+    for (int i = 0; i < g_kb_len; i++) {
+        if (g_kb_text[i] != ' ') {
+            has_text = true;
+            break;
+        }
+    }
+    if (g_kb_len == 0 || !has_text) {
+        ShowMessage("EMPTY - TYPE SOMETHING", Page::PassEdit, 1500);
         return;
     }
     g_kb_text[g_kb_len] = '\0';
-    if (g_kb_stop) {
-        std::snprintf(g_config->stop, sizeof(g_config->stop), "%.7s",
-                      g_kb_text);
-        ConfirmStop();
-    } else {
-        std::snprintf(g_config->ssid, sizeof(g_config->ssid), "%.32s",
-                      g_chosen_ssid);
-        std::snprintf(g_config->password, sizeof(g_config->password), "%.64s",
-                      g_kb_text);
-        SaveAndReboot("wifi");
-    }
-}
-
-void KbCancel() {
-    if (g_kb_stop) {
-        g_page = Page::Menu;
-        PaintMenu(true);
-    } else {
-        g_page = Page::WifiList;
-        PaintWifiList(true);
-    }
+    std::snprintf(g_config->ssid, sizeof(g_config->ssid), "%.32s",
+                  g_chosen_ssid);
+    std::snprintf(g_config->password, sizeof(g_config->password), "%.64s",
+                  g_kb_text);
+    SaveAndReboot("wifi");
 }
 
 void KbActivate() {
@@ -498,12 +785,78 @@ void KbActivate() {
             KbSubmit();
             return;  // submit may have changed the page
         case kActCancel:
-            KbCancel();
+            g_page = Page::WifiList;
+            PaintWifiList(true);
             return;
         default:
             break;
     }
     PaintKbPage(false);
+}
+
+void OpenStopList() {
+    g_stop_sel = 0;
+    // Preselect the currently configured stop.
+    for (int i = 0; i < g_stop_count; i++) {
+        if (std::strcmp(bus_stops::kStops[g_stop_order[i]].code,
+                        g_config->stop) == 0) {
+            g_stop_sel = i + 1;
+            break;
+        }
+    }
+    g_page = Page::StopList;
+    PaintStopList(true);
+}
+
+void OpenRouteList() {
+    if (g_route_count <= 0) {
+        ShowMessage("NO ROUTES (OFFLINE?)", Page::StopForm, 1800);
+        return;
+    }
+    g_route_sel = 1;  // first route (index 0 is <BACK>)
+    for (int i = 0; i < g_route_count; i++) {
+        if (std::strcmp(g_routes[i], g_form_route) == 0) {
+            g_route_sel = i + 1;
+            break;
+        }
+    }
+    g_page = Page::RouteList;
+    PaintRouteList(true);
+}
+
+void StopFormActivate() {
+    switch (g_form_sel) {
+        case kFormItemStop:
+            OpenStopList();
+            break;
+        case kFormItemRoute:
+            LoadRoutesForStop();
+            if (g_route_count > 0) {
+                OpenRouteList();
+            } else {
+                ShowMessage("NO ROUTES (OFFLINE?)", Page::StopForm, 1800);
+            }
+            break;
+        case kFormItemOk:
+            if (g_config->stop[0] == '\0') {
+                ShowMessage("PICK A STOP FIRST", Page::StopForm, 1500);
+                break;
+            }
+            if (g_form_route[0] == '\0') {
+                ShowMessage("PICK A ROUTE FIRST", Page::StopForm, 1500);
+                break;
+            }
+            std::snprintf(g_config->route, sizeof(g_config->route), "%.7s",
+                          g_form_route);
+            SaveAndReboot("stop/route");
+            break;
+        case kFormItemCancel:
+            g_page = Page::Menu;
+            PaintMenu(true);
+            break;
+        default:
+            break;
+    }
 }
 
 void HandleEvent(BusKeyEvent ev) {
@@ -538,7 +891,7 @@ void HandleEvent(BusKeyEvent ev) {
                     if (g_menu_sel == 0) {
                         StartWifiList();
                     } else if (g_menu_sel == 1) {
-                        StartKb(true);
+                        StartStopForm();
                     } else {
                         ExitToCard();
                     }
@@ -561,13 +914,12 @@ void HandleEvent(BusKeyEvent ev) {
                     g_wifi_sel++;
                     PaintWifiList(false);
                 } else if (ev.key == kKeyOk) {
-                    StartKb(false);
+                    StartPassEdit();
                 }
             }
             break;
 
         case Page::PassEdit:
-        case Page::StopEdit:
             if (ev.key == kKeyOk && ev.type == kPressLong) {
                 KbSubmit();
                 break;
@@ -586,48 +938,91 @@ void HandleEvent(BusKeyEvent ev) {
             }
             break;
 
-        case Page::RouteList:
+        case Page::StopForm:
             if (ev.key == kKeyOk && ev.type == kPressLong) {
-                StartKb(true);
+                g_page = Page::Menu;
+                PaintMenu(true);
                 break;
             }
-            if (ev.type == kPressClick && g_route_count > 0) {
-                if (ev.key == kKeyUp && g_route_sel > 0) {
-                    g_route_sel--;
-                    PaintRouteList(false);
-                } else if (ev.key == kKeyDown &&
-                           g_route_sel < g_route_count - 1) {
-                    g_route_sel++;
-                    PaintRouteList(false);
+            if (ev.type == kPressClick) {
+                if (ev.key == kKeyUp) {
+                    g_form_sel = (g_form_sel + kFormItemCount - 1) %
+                                 kFormItemCount;
+                } else if (ev.key == kKeyDown) {
+                    g_form_sel = (g_form_sel + 1) % kFormItemCount;
                 } else if (ev.key == kKeyOk) {
-                    std::snprintf(g_config->route, sizeof(g_config->route),
-                                  "%s", g_routes[g_route_sel]);
-                    SaveAndReboot("stop/route");
+                    StopFormActivate();
+                    break;
                 }
+                PaintStopForm(false);
             }
             break;
+
+        case Page::StopList: {
+            const int total = g_stop_count + 1;
+            if (ev.key == kKeyOk && ev.type == kPressLong) {
+                g_page = Page::StopForm;
+                PaintStopForm(true);
+                break;
+            }
+            if (ev.type == kPressClick) {
+                if (ev.key == kKeyUp) {
+                    g_stop_sel = (g_stop_sel + total - 1) % total;
+                } else if (ev.key == kKeyDown) {
+                    g_stop_sel = (g_stop_sel + 1) % total;
+                } else if (ev.key == kKeyOk) {
+                    if (g_stop_sel == 0) {
+                        g_page = Page::StopForm;
+                        PaintStopForm(true);
+                    } else {
+                        std::snprintf(
+                            g_config->stop, sizeof(g_config->stop), "%.7s",
+                            bus_stops::kStops[g_stop_order[g_stop_sel - 1]].code);
+                        g_form_sel = kFormItemRoute;
+                        LoadRoutesForStop();
+                        g_page = Page::StopForm;
+                        PaintStopForm(true);
+                    }
+                    break;
+                }
+                PaintStopList(false);
+            }
+            break;
+        }
+
+        case Page::RouteList: {
+            const int total = g_route_count + 1;
+            if (ev.key == kKeyOk && ev.type == kPressLong) {
+                g_page = Page::StopForm;
+                PaintStopForm(true);
+                break;
+            }
+            if (ev.type == kPressClick) {
+                if (ev.key == kKeyUp) {
+                    g_route_sel = (g_route_sel + total - 1) % total;
+                } else if (ev.key == kKeyDown) {
+                    g_route_sel = (g_route_sel + 1) % total;
+                } else if (ev.key == kKeyOk) {
+                    if (g_route_sel == 0) {
+                        g_page = Page::StopForm;
+                        PaintStopForm(true);
+                    } else {
+                        std::snprintf(g_form_route, sizeof(g_form_route),
+                                      "%.7s", g_routes[g_route_sel - 1]);
+                        g_form_sel = kFormItemOk;
+                        g_page = Page::StopForm;
+                        PaintStopForm(true);
+                    }
+                    break;
+                }
+                PaintRouteList(false);
+            }
+            break;
+        }
 
         case Page::Message:
-            g_page = g_msg_back;
-            if (g_page == Page::Menu) {
-                PaintMenu(true);
-            } else if (g_page == Page::RouteList) {
-                PaintRouteList(false);
-            } else if (g_page == Page::PassEdit || g_page == Page::StopEdit) {
-                PaintKbPage(false);
-            }
+            RestoreAfterMessage();
             break;
-    }
-}
-
-void RestoreAfterMessage() {
-    g_page = g_msg_back;
-    if (g_page == Page::Menu) {
-        PaintMenu(true);
-    } else if (g_page == Page::RouteList) {
-        PaintRouteList(false);
-    } else if (g_page == Page::PassEdit || g_page == Page::StopEdit) {
-        PaintKbPage(false);
     }
 }
 
@@ -656,6 +1051,32 @@ void Emit(BusKeyEvent event) {
 
 }  // namespace
 
+void BusUiOpenMenu() {
+    if (g_active || g_events == nullptr) {
+        return;
+    }
+    g_active = true;
+    g_menu_sel = 0;
+    g_page = Page::Menu;
+    PaintMenu(true);
+    ESP_LOGI(kTag, "UI opened via console");
+}
+
+void BusUiInjectKey(int key, bool long_press) {
+    if (g_events == nullptr) {
+        return;
+    }
+    BusKeyEvent ev = {};
+    switch (key) {
+        case 0: ev.key = kKeyUp; break;
+        case 1: ev.key = kKeyDown; break;
+        case 2: ev.key = kKeyOk; break;
+        default: return;
+    }
+    ev.type = long_press ? kPressLong : kPressClick;
+    Emit(ev);
+}
+
 void BusUiStart(BusConfig* config, void (*on_exit)()) {
     g_config = config;
     g_on_exit = on_exit;
@@ -664,6 +1085,7 @@ void BusUiStart(BusConfig* config, void (*on_exit)()) {
         ESP_LOGE(kTag, "queue alloc failed");
         return;
     }
+    SortStopOrder();
     BusButtonsStart(Emit);
     if (xTaskCreate(UiTask, "bus_ui", 6144, nullptr, 4, nullptr) != pdPASS) {
         ESP_LOGE(kTag, "failed to start UI task");
