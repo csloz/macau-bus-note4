@@ -31,7 +31,7 @@
 namespace {
 
 constexpr const char* kTag = "bus.main";
-constexpr const char* kVersion = "2.5.0";
+constexpr const char* kVersion = "2.6.0";
 constexpr TickType_t kRefreshInterval = pdMS_TO_TICKS(5 * 60 * 1000);
 constexpr TickType_t kWifiRetryInterval = pdMS_TO_TICKS(30 * 1000);
 constexpr int kRefreshBit = BIT0;
@@ -62,10 +62,23 @@ void Paint() {
     BusDisplayPaint();
 }
 
+// Largest text scale (<= max_scale) whose width fits max_w.
+int FitScale(const char* s, int max_scale, int max_w) {
+    int sc = max_scale;
+    while (sc > 1 && g_canvas.TextWidth(s, sc) > max_w) {
+        sc--;
+    }
+    return sc;
+}
+
 void RenderSplash(const char* line2) {
     g_canvas.Clear();
-    g_canvas.TextCentered(90, "NOTE4 BUS BOARD", 3, false);
-    g_canvas.TextCentered(160, line2, 2, false);
+    g_canvas.TextCentered(100, "NOTE4 BUS BOARD",
+                          FitScale("NOTE4 BUS BOARD", 2,
+                                   HearthCanvas::kWidth - 24), false);
+    g_canvas.TextCentered(160, line2, FitScale(line2, 2,
+                                               HearthCanvas::kWidth - 24),
+                          false);
     g_canvas.TextCentered(220, kVersion, 1, false);
     Paint();
 }
@@ -181,15 +194,22 @@ void RenderCard(const BusView& view, const Weather* wx, const char* stop,
         std::snprintf(nextline, sizeof(nextline), "STOP NOT ON ROUTE %s",
                       view.route);
     }
-    g_canvas.Text(12, 242, nextline, 2, false);
-
-    char alson[96];
-    std::snprintf(alson, sizeof(alson), "ALSO: %s", also_routes);
-    g_canvas.Text(12, 272, alson, 1, false);
+    // Auto-shrink so the line can never overflow the panel width.
+    g_canvas.Text(12, 242, nextline,
+                  FitScale(nextline, 2, w - 24), false);
 
     char statline[64];
     std::snprintf(statline, sizeof(statline), "%s", g_status);
     const int sx = w - 12 - g_canvas.TextWidth(statline, 1);
+
+    // Trim the ALSO list so it can never collide with the status text.
+    char alson[96];
+    std::snprintf(alson, sizeof(alson), "ALSO: %s", also_routes);
+    int alson_max = sx - 24;
+    while (alson[0] != '\0' && g_canvas.TextWidth(alson, 1) > alson_max) {
+        alson[std::strlen(alson) - 1] = '\0';
+    }
+    g_canvas.Text(12, 272, alson, 1, false);
     g_canvas.Text(sx, 272, statline, 1, false);
 
     // --- Border ---
@@ -393,6 +413,11 @@ extern "C" void app_main(void) {
     esp_console_cmd_register(&page_cmd);
 
     RenderSplash("starting...");
+    BusDisplaySetFlip(g_config.flip != 0);
+    if (g_config.flip) {
+        // Re-draw the splash the right way up for a flipped mount.
+        RenderSplash("starting...");
+    }
 
     bool configured = BusConfigComplete(g_config);
     if (!configured) {

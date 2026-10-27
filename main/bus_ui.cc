@@ -216,8 +216,11 @@ void (*g_on_exit)() = nullptr;
 
 // Menu
 int g_menu_sel = 0;
-constexpr const char* kMenuItems[] = {"WIFI SETUP", "BUS STOP", "EXIT"};
-constexpr int kMenuCount = 3;
+// Menu labels; item 2's label is dynamic (shows the flip state).
+constexpr const char* kMenuItems[] = {"WIFI SETUP", "BUS STOP",
+                                      "FLIP DISPLAY", "EXIT"};
+constexpr int kMenuCount = 4;
+constexpr int kMenuFlip = 2;
 
 // Wifi list
 BusWifiAp g_aps[15];
@@ -332,8 +335,15 @@ void PaintMenu(bool full) {
     auto& c = BusDisplayCanvas();
     Header("SETTINGS");
     for (int i = 0; i < kMenuCount; i++) {
-        const int y = 80 + i * 60;
-        c.Text(60, y, kMenuItems[i], 3, i == g_menu_sel);
+        const int y = 72 + i * 56;
+        if (i == kMenuFlip) {
+            char label[16];
+            std::snprintf(label, sizeof(label), "FLIP: %s",
+                          BusDisplayGetFlip() ? "ON" : "OFF");
+            c.Text(60, y, label, 3, i == g_menu_sel);
+        } else {
+            c.Text(60, y, kMenuItems[i], 3, i == g_menu_sel);
+        }
         if (i == g_menu_sel) {
             c.Text(24, y, ">", 3, false);
         }
@@ -864,6 +874,15 @@ void StopFormActivate() {
 }
 
 void HandleEvent(BusKeyEvent ev) {
+    if (BusDisplayGetFlip() && ev.type == kPressClick) {
+        // Flipped display: the device is mounted 180 degrees, so the
+        // physical UP and DOWN buttons swap meaning.
+        if (ev.key == kKeyUp) {
+            ev.key = kKeyDown;
+        } else if (ev.key == kKeyDown) {
+            ev.key = kKeyUp;
+        }
+    }
     switch (g_page) {
         case Page::Card:
             if (ev.key == kKeyOk && ev.type == kPressLong) {
@@ -896,6 +915,12 @@ void HandleEvent(BusKeyEvent ev) {
                         StartWifiList();
                     } else if (g_menu_sel == 1) {
                         StartStopForm();
+                    } else if (g_menu_sel == kMenuFlip) {
+                        // Toggle + save immediately; repaints rotated.
+                        g_config->flip = g_config->flip ? 0 : 1;
+                        BusDisplaySetFlip(g_config->flip != 0);
+                        BusConfigSave(*g_config);
+                        PaintMenu(true);
                     } else {
                         ExitToCard();
                     }

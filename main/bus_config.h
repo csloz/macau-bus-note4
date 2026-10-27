@@ -10,6 +10,7 @@ struct BusConfig {
     char password[65] = {};
     char stop[8] = {};    // DSAT stop code to monitor (e.g. "T394")
     char route[8] = {};   // hero route shown in the header (e.g. "51A")
+    int flip = 0;         // 1 = display rotated 180deg, UP/DOWN swapped
 };
 
 esp_err_t BusConfigLoad(BusConfig* out);

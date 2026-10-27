@@ -11,6 +11,11 @@ void BusDisplayInit(zectrix_epd_handle_t epd);
 // BusDisplayPaint (or BusDisplayPaintRows for a fast partial band update).
 HearthCanvas& BusDisplayCanvas();
 
+// Flip mode: everything is painted rotated 180 degrees. UP/DOWN key
+// swapping is handled in the UI layer.
+void BusDisplaySetFlip(bool flip);
+bool BusDisplayGetFlip();
+
 // Full-screen refresh. Powers the panel on first if needed. Blocks until the
 // panel reports busy-release (~2-3 s).
 void BusDisplayPaint();
