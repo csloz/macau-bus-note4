@@ -342,6 +342,10 @@ void PaintMenu(bool full) {
     if (full) BusDisplayPaint(); else BusDisplayPaintRows(kHeaderH, 300);
 }
 
+// WiFi list: compact 20px rows in the 12px u8g2 font — 12 networks per screen.
+constexpr int kWifiRowH = 20;
+constexpr int kWifiRowsVisible = 12;
+
 void PaintWifiList(bool full) {
     auto& c = BusDisplayCanvas();
     Header("WIFI SETUP");
@@ -351,30 +355,33 @@ void PaintWifiList(bool full) {
         BusDisplayPaint();
         return;
     }
-    int first = g_wifi_sel - (kRowsVisible - 1);
+    int first = g_wifi_sel - (kWifiRowsVisible - 1);
     if (first < 0) first = 0;
-    if (g_ap_count > kRowsVisible && first > g_ap_count - kRowsVisible) {
-        first = g_ap_count - kRowsVisible;
+    if (g_ap_count > kWifiRowsVisible && first > g_ap_count - kWifiRowsVisible) {
+        first = g_ap_count - kWifiRowsVisible;
     }
-    char rssi[8];
-    for (int row = 0; row < kRowsVisible && first + row < g_ap_count; row++) {
+    for (int row = 0; row < kWifiRowsVisible && first + row < g_ap_count;
+         row++) {
         const int idx = first + row;
         const BusWifiAp& ap = g_aps[idx];
-        const int y = kListY0 + row * kRowH;
+        const int y = kListY0 + row * kWifiRowH;
+        const int y_base = y + 14;
         const bool inv = idx == g_wifi_sel;
         if (inv) {
-            c.FillRect(0, y, kW, kRowH, true);
+            c.FillRect(0, y, kW, kWifiRowH, true);
         }
         // RSSI pinned to the right edge; SSID gets the rest, truncated
-        // with a ".." marker when it does not fit.
+        // with a ".." marker when it does not fit. All 12px u8g2 text.
+        char rssi[8];
         std::snprintf(rssi, sizeof(rssi), "%d", ap.rssi);
-        const int rx = kW - 12 - c.TextWidth(rssi, 2);
+        const int rssi_w = u8g2font::TextWidth(kFont, rssi);
+        const int rx = kW - 12 - rssi_w;
         const int max_w = rx - 44;
-        const int end = TextUtf8(12, y, ap.ssid, max_w, inv);
+        const int end = TextSmall12(12, y_base, ap.ssid, max_w, inv);
         if (ap.ssid[0] != '\0' && end >= max_w) {
-            c.Text(rx - 40, y, "..", 2, inv);
+            TextSmall12(rx - 40, y_base, "..", rx - 40 + 12, inv);
         }
-        c.Text(rx, y, rssi, 2, inv);
+        TextSmall12(rx, y_base, rssi, kW, inv);
     }
     Hint("OK=select  HOLD OK=back");
     if (full) BusDisplayPaint(); else BusDisplayPaintRows(kListY0, kListY1);
@@ -1083,12 +1090,14 @@ void BusUiState(char* out, int out_len) {
         std::snprintf(out, out_len, "?");
         return;
     }
-    std::snprintf(out, out_len, "%s sel=%d stops=%d routes=%d", kNames[p],
+    std::snprintf(out, out_len, "%s sel=%d stops=%d routes=%d aps=%d",
+                  kNames[p],
                   g_page == Page::StopList ? g_stop_sel
                   : g_page == Page::RouteList ? g_route_sel
                   : g_page == Page::Menu ? g_menu_sel
+                  : g_page == Page::WifiList ? g_wifi_sel
                   : -1,
-                  g_stop_count, g_route_count);
+                  g_stop_count, g_route_count, g_ap_count);
 }
 
 void BusUiStart(BusConfig* config, void (*on_exit)()) {
