@@ -27,12 +27,14 @@ matching layout. Photo taken minutes apart (17:10 vs 17:11).*
 Hold **OK** on the normal card to open the settings menu (UP/DOWN to pick,
 OK to open, hold OK to exit back to the card):
 
-- **WIFI SETUP** — scans and lists networks by signal strength; OK selects,
-  then type the password with UP/DOWN (character cycling), OK = next
-  character, hold DOWN = backspace, hold OK = save + reboot.
-- **BUS STOP** — type the stop code the same way (e.g. `T394`); hold OK to
-  confirm, the device validates it against the embedded 451-stop database and
-  shows every route serving that stop; pick one and it saves + reboots.
+- **WIFI SETUP** — scans and lists networks by signal strength; OK selects.
+  The password is typed on an on-screen keyboard (qwerty + abc/ABC/symbol
+  pages): UP/DOWN move the highlighted key, OK presses it, hold OK submits.
+  On-screen OK and CANCEL buttons are part of the keyboard; CANCEL returns to
+  the network list at any point.
+- **BUS STOP** — same on-screen keyboard, letters/digits pages; the code is
+  validated against the embedded 451-stop database, then a picker lists every
+  route serving that stop; pick one and it saves + reboots.
 - **EXIT** — back to the arrivals card (repaints immediately).
 
 Scrolling lists and editors use fast partial e-paper refreshes; a full
