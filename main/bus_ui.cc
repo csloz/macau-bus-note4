@@ -26,13 +26,97 @@ constexpr int kRowH = 32;
 constexpr int kListY0 = kHeaderH;
 constexpr int kListY1 = kListY0 + 8 * kRowH + 8;
 constexpr int kRowsVisible = 8;
-constexpr int kEditorWrap = 24;  // scale-2 chars per line
 
-// Character sets for the editors.
-constexpr char kPassChars[] =
-    " abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-    "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~";
-constexpr char kStopChars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+// ---------- on-screen keyboard geometry ----------
+constexpr int kKbCols = 10;
+constexpr int kKbRows = 4;          // 3 char rows + nav row
+constexpr int kKbCellW = 32;
+constexpr int kKbCellH = 34;
+constexpr int kKbPitchY = 36;
+constexpr int kKbX0 = (kW - kKbCols * kKbCellW) / 2;  // 40
+constexpr int kKbY0 = 84;
+
+// Cell actions.
+constexpr uint8_t kActChar = 0;    // type cell->ch
+constexpr uint8_t kActMode = 1;    // cycle charset mode
+constexpr uint8_t kActDel = 2;     // backspace
+constexpr uint8_t kActSpace = 3;
+constexpr uint8_t kActOk = 4;      // submit
+constexpr uint8_t kActCancel = 5;  // back out
+constexpr uint8_t kActNone = 6;    // filler, skipped by the cursor
+
+struct KbCell {
+    const char* label;
+    char ch;
+    uint8_t action;
+};
+
+constexpr KbCell None() { return {"", 0, kActNone}; }
+constexpr KbCell Key(const char* label, char ch) { return {label, ch, kActChar}; }
+constexpr KbCell Mode(const char* label) { return {label, 0, kActMode}; }
+constexpr KbCell Del() { return {"DEL", 0, kActDel}; }
+constexpr KbCell Act(uint8_t action, const char* label) { return {label, 0, action}; }
+
+// Keyboard modes. The stop editor uses UPPER + DIGITS only.
+enum KbMode { KB_LOWER = 0, KB_UPPER, KB_SYM1, KB_SYM2, KB_DIGITS, KB_MODE_COUNT };
+
+// 3 content rows x 10 cols per mode. The cursor skips kActNone cells.
+constexpr KbCell kLowerRows[3][kKbCols] = {
+    {Key("q",'q'), Key("w",'w'), Key("e",'e'), Key("r",'r'), Key("t",'t'),
+     Key("y",'y'), Key("u",'u'), Key("i",'i'), Key("o",'o'), Key("p",'p')},
+    {Key("a",'a'), Key("s",'s'), Key("d",'d'), Key("f",'f'), Key("g",'g'),
+     Key("h",'h'), Key("j",'j'), Key("k",'k'), Key("l",'l'), None()},
+    {Mode("ABC"), Key("z",'z'), Key("x",'x'), Key("c",'c'), Key("v",'v'),
+     Key("b",'b'), Key("n",'n'), Key("m",'m'), Del(), None()},
+};
+constexpr KbCell kUpperRows[3][kKbCols] = {
+    {Key("Q",'Q'), Key("W",'W'), Key("E",'E'), Key("R",'R'), Key("T",'T'),
+     Key("Y",'Y'), Key("U",'U'), Key("I",'I'), Key("O",'O'), Key("P",'P')},
+    {Key("A",'A'), Key("S",'S'), Key("D",'D'), Key("F",'F'), Key("G",'G'),
+     Key("H",'H'), Key("J",'J'), Key("K",'K'), Key("L",'L'), None()},
+    {Mode("abc"), Key("Z",'Z'), Key("X",'X'), Key("C",'C'), Key("V",'V'),
+     Key("B",'B'), Key("N",'N'), Key("M",'M'), Del(), None()},
+};
+constexpr KbCell kSym1Rows[3][kKbCols] = {
+    {Key("1",'1'), Key("2",'2'), Key("3",'3'), Key("4",'4'), Key("5",'5'),
+     Key("6",'6'), Key("7",'7'), Key("8",'8'), Key("9",'9'), Key("0",'0')},
+    {Key("!",'!'), Key("@",'@'), Key("#",'#'), Key("$",'$'), Key("%",'%'),
+     Key("^",'^'), Key("&",'&'), Key("*",'*'), Key("(",'('), Key(")",')')},
+    {Mode("S2"), Key("+",'+'), Key("-",'-'), Key("_",'_'), Key(":",':'),
+     Key(";",';'), Key(".",','), Key("/",'/'), Del(), None()},
+};
+constexpr KbCell kSym2Rows[3][kKbCols] = {
+    {Key("=",'='), Key("<",'<'), Key(">",'>'), Key("[",'['), Key("]",']'),
+     Key("{",'{'), Key("}",'}'), None(), None(), None()},
+    {Key("\\",'\\'), Key("|",'|'), Key("`",'`'), Key("~",'~'), Key("'",'\''),
+     Key("\"",'\"'), None(), None(), None(), None()},
+    {Mode("abc"), None(), None(), None(), None(), None(), None(), None(),
+     Del(), None()},
+};
+constexpr KbCell kDigitsRows[3][kKbCols] = {
+    {Key("1",'1'), Key("2",'2'), Key("3",'3'), Key("4",'4'), Key("5",'5'),
+     Key("6",'6'), Key("7",'7'), Key("8",'8'), Key("9",'9'), Key("0",'0')},
+    {Key("-",'-'), Key("_",'_'), Key("/",'/'), Key(".",','), Key(":",':'),
+     None(), None(), None(), None(), None()},
+    {Mode("ABC"), None(), None(), None(), None(), None(), None(), None(),
+     Del(), None()},
+};
+
+// Nav row (same for every mode): [SPC x4] [OK x2] [CAN x2], centered.
+constexpr KbCell kNavRow[kKbCols] = {
+    None(), Act(kActSpace, "SPC"), Act(kActSpace, "SPC"), Act(kActSpace, "SPC"),
+    Act(kActSpace, "SPC"), Act(kActOk, "OK"), Act(kActOk, "OK"),
+    Act(kActCancel, "CAN"), Act(kActCancel, "CAN"), None(),
+};
+
+// Editor state.
+KbMode g_kb_mode = KB_LOWER;
+bool g_kb_stop = false;   // uppercase/digits editor for stop codes
+int g_kb_sel = 0;         // linear index over selectable cells (row-major)
+char g_kb_text[65] = {};
+int g_kb_len = 0;
+char g_kb_title[24] = {};
+char g_kb_sub[48] = {};
 
 enum class Page {
     Card,        // normal display (owned by the main loop)
@@ -63,16 +147,6 @@ int g_ap_count = 0;
 int g_wifi_sel = 0;
 char g_chosen_ssid[33] = {};
 
-// Password editor
-char g_pass[65] = {};
-int g_pass_len = 0;
-int g_pass_idx = 0;  // index into kPassChars
-
-// Stop editor
-char g_stop[8] = {};
-int g_stop_len = 0;
-int g_stop_idx = 0;  // index into kStopChars
-
 // Route list
 char g_routes[12][8];
 int g_route_count = 0;
@@ -80,6 +154,83 @@ int g_route_sel = 0;
 
 bool g_active = false;
 QueueHandle_t g_events = nullptr;
+
+// ---------- keyboard helpers ----------
+
+const KbCell* ModeRows(KbMode mode) {
+    switch (mode) {
+        case KB_LOWER: return &kLowerRows[0][0];
+        case KB_UPPER: return &kUpperRows[0][0];
+        case KB_SYM1: return &kSym1Rows[0][0];
+        case KB_SYM2: return &kSym2Rows[0][0];
+        case KB_DIGITS: return &kDigitsRows[0][0];
+        default: return &kLowerRows[0][0];
+    }
+}
+
+const KbCell* CellAt(int row, int col) {
+    if (row < 3) {
+        return &ModeRows(g_kb_mode)[row * kKbCols + col];
+    }
+    return &kNavRow[col];
+}
+
+bool CellSelectable(const KbCell* cell) {
+    return cell->action != kActNone;
+}
+
+int SelectableCount() {
+    int n = 0;
+    for (int r = 0; r < kKbRows; r++) {
+        for (int c = 0; c < kKbCols; c++) {
+            if (CellSelectable(CellAt(r, c))) {
+                n++;
+            }
+        }
+    }
+    return n;
+}
+
+void SelToCell(int sel, int* row, int* col) {
+    int n = 0;
+    for (int r = 0; r < kKbRows; r++) {
+        for (int c = 0; c < kKbCols; c++) {
+            if (CellSelectable(CellAt(r, c))) {
+                if (n == sel) {
+                    *row = r;
+                    *col = c;
+                    return;
+                }
+                n++;
+            }
+        }
+    }
+    *row = 0;
+    *col = 0;
+}
+
+KbMode NextMode(KbMode mode) {
+    if (g_kb_stop) {
+        // Stop codes: letters <-> digits only.
+        return mode == KB_UPPER ? KB_DIGITS : KB_UPPER;
+    }
+    return static_cast<KbMode>((mode + 1) % KB_MODE_COUNT);
+}
+
+void CycleMode() {
+    g_kb_mode = NextMode(g_kb_mode);
+    // Park the cursor on the mode key (row 2, col 0) of the new layout.
+    int n = 0;
+    for (int r = 0; r < kKbRows; r++) {
+        for (int c = 0; c < kKbCols; c++) {
+            if (!CellSelectable(CellAt(r, c))) continue;
+            if (r == 2 && c == 0) {
+                g_kb_sel = n;
+            }
+            n++;
+        }
+    }
+}
 
 // ---------- rendering ----------
 
@@ -133,58 +284,47 @@ void PaintWifiList(bool full) {
     if (full) BusDisplayPaint(); else BusDisplayPaintRows(kListY0, kListY1);
 }
 
-// Current cursor position for the editor text area.
-void EditorCursorPos(int typed_len, int& cx, int& cy) {
-    cy = 92 + (typed_len / kEditorWrap) * 28;
-    cx = 12 + (typed_len % kEditorWrap) * 16;
-    if (cy > 244) {
-        cy = 244;
-    }
-}
-
-void PaintEditor(const char* title, const char* sub, const char* typed,
-                 bool password, bool full) {
+void DrawKbCell(int row, int col, bool selected) {
     auto& c = BusDisplayCanvas();
-    Header(title);
-    c.Text(12, 50, sub, 1, false);
-
-    char shown[80] = {};
-    if (password) {
-        const int dots = g_pass_len > 30 ? 30 : g_pass_len;
-        std::memset(shown, '*', dots);
-        shown[dots] = '\0';
+    const KbCell* cell = CellAt(row, col);
+    const int x = kKbX0 + col * kKbCellW;
+    const int y = kKbY0 + row * kKbPitchY;
+    if (cell->action == kActNone) {
+        return;
+    }
+    if (selected) {
+        c.FillRect(x, y, kKbCellW - 2, kKbCellH, true);
+        c.Text(x + 8, y + 9, cell->label, 2, true);
     } else {
-        std::snprintf(shown, sizeof(shown), "%s", typed);
+        c.Rect(x, y, kKbCellW - 2, kKbCellH, true);
+        c.Text(x + 8, y + 9, cell->label, 2, false);
     }
-    int y = 92;
-    const int len = static_cast<int>(std::strlen(shown));
-    for (int start = 0; start < len; start += kEditorWrap) {
-        char chunk[kEditorWrap + 1];
-        std::snprintf(chunk, sizeof(chunk), "%.*s", kEditorWrap,
-                      shown + start);
-        c.Text(12, y, chunk, 2, false);
-        y += 28;
-    }
-    int cx = 0;
-    int cy = 0;
-    EditorCursorPos(g_pass_len, cx, cy);
-    char curbuf[8];
-    const char cur = password ? kPassChars[g_pass_idx] : kStopChars[g_stop_idx];
-    std::snprintf(curbuf, sizeof(curbuf), "[%c]", cur == ' ' ? '_' : cur);
-    c.Text(cx, cy, curbuf, 2, false);
+}
 
-    Hint("OK=next  HOLD OK=done  HOLD DOWN=del");
+void PaintKbPage(bool full) {
+    auto& c = BusDisplayCanvas();
+    Header(g_kb_title);
+    c.Text(12, 48, g_kb_sub, 1, false);
+
+    int sr, sc;
+    SelToCell(g_kb_sel, &sr, &sc);
+    for (int r = 0; r < kKbRows; r++) {
+        for (int col = 0; col < kKbCols; col++) {
+            if (CellSelectable(CellAt(r, col))) {
+                DrawKbCell(r, col, r == sr && col == sc);
+            }
+        }
+    }
+
+    // Typed text (plain, so it can be checked) with a cursor underscore.
+    char line[32];
+    const int show = 24;
+    const int start = g_kb_len > show ? g_kb_len - show : 0;
+    std::snprintf(line, sizeof(line), "%.*s_", g_kb_len - start,
+                  g_kb_text + start);
+    c.Text(12, 246, line, 2, false);
+    Hint("UP/DOWN=move  OK=pick  HOLD OK=done");
     if (full) BusDisplayPaint(); else BusDisplayPaintRows(kHeaderH, 300);
-}
-
-void PaintPassEdit(bool full) {
-    char sub[48];
-    std::snprintf(sub, sizeof(sub), "FOR %s", g_chosen_ssid);
-    PaintEditor("WIFI PASSWORD", sub, g_pass, true, full);
-}
-
-void PaintStopEdit(bool full) {
-    PaintEditor("BUS STOP", "ENTER STOP CODE (E.G. T394)", g_stop, false, full);
 }
 
 void PaintRouteList(bool full) {
@@ -270,20 +410,21 @@ void StartWifiList() {
     PaintWifiList(true);
 }
 
-void StartPassEdit() {
-    std::snprintf(g_chosen_ssid, sizeof(g_chosen_ssid), "%s",
-                  g_aps[g_wifi_sel].ssid);
-    g_pass_len = 0;
-    g_pass_idx = 1;  // 'a'
-    g_page = Page::PassEdit;
-    PaintPassEdit(true);
-}
-
-void StartStopEdit() {
-    g_stop_len = 0;
-    g_stop_idx = 0;  // 'A'
-    g_page = Page::StopEdit;
-    PaintStopEdit(true);
+void StartKb(bool for_stop) {
+    g_kb_stop = for_stop;
+    g_kb_len = 0;
+    g_kb_text[0] = '\0';
+    g_kb_mode = for_stop ? KB_UPPER : KB_LOWER;
+    g_kb_sel = 0;
+    if (for_stop) {
+        std::snprintf(g_kb_title, sizeof(g_kb_title), "BUS STOP");
+        std::snprintf(g_kb_sub, sizeof(g_kb_sub), "CODE (E.G. T394)");
+    } else {
+        std::snprintf(g_kb_title, sizeof(g_kb_title), "WIFI PASSWORD");
+        std::snprintf(g_kb_sub, sizeof(g_kb_sub), "FOR %s", g_chosen_ssid);
+    }
+    g_page = for_stop ? Page::StopEdit : Page::PassEdit;
+    PaintKbPage(true);
 }
 
 void ExitToCard() {
@@ -295,7 +436,75 @@ void ExitToCard() {
     }
 }
 
-// ---------- event handling ----------
+// ---------- keyboard events ----------
+
+// Submit the typed text (on-screen OK or physical HOLD OK).
+void KbSubmit() {
+    if (g_kb_len == 0) {
+        ShowMessage("EMPTY - TYPE SOMETHING", g_page, 1500);
+        return;
+    }
+    g_kb_text[g_kb_len] = '\0';
+    if (g_kb_stop) {
+        std::snprintf(g_config->stop, sizeof(g_config->stop), "%.7s",
+                      g_kb_text);
+        ConfirmStop();
+    } else {
+        std::snprintf(g_config->ssid, sizeof(g_config->ssid), "%.32s",
+                      g_chosen_ssid);
+        std::snprintf(g_config->password, sizeof(g_config->password), "%.64s",
+                      g_kb_text);
+        SaveAndReboot("wifi");
+    }
+}
+
+void KbCancel() {
+    if (g_kb_stop) {
+        g_page = Page::Menu;
+        PaintMenu(true);
+    } else {
+        g_page = Page::WifiList;
+        PaintWifiList(true);
+    }
+}
+
+void KbActivate() {
+    int row, col;
+    SelToCell(g_kb_sel, &row, &col);
+    const KbCell* cell = CellAt(row, col);
+    switch (cell->action) {
+        case kActChar:
+            if (g_kb_len < static_cast<int>(sizeof(g_kb_text) - 1)) {
+                g_kb_text[g_kb_len++] = cell->ch;
+                g_kb_text[g_kb_len] = '\0';
+            }
+            break;
+        case kActMode:
+            CycleMode();
+            break;
+        case kActDel:
+            if (g_kb_len > 0) {
+                g_kb_len--;
+                g_kb_text[g_kb_len] = '\0';
+            }
+            break;
+        case kActSpace:
+            if (g_kb_len < static_cast<int>(sizeof(g_kb_text) - 1)) {
+                g_kb_text[g_kb_len++] = ' ';
+                g_kb_text[g_kb_len] = '\0';
+            }
+            break;
+        case kActOk:
+            KbSubmit();
+            return;  // submit may have changed the page
+        case kActCancel:
+            KbCancel();
+            return;
+        default:
+            break;
+    }
+    PaintKbPage(false);
+}
 
 void HandleEvent(BusKeyEvent ev) {
     switch (g_page) {
@@ -329,7 +538,7 @@ void HandleEvent(BusKeyEvent ev) {
                     if (g_menu_sel == 0) {
                         StartWifiList();
                     } else if (g_menu_sel == 1) {
-                        StartStopEdit();
+                        StartKb(true);
                     } else {
                         ExitToCard();
                     }
@@ -352,104 +561,34 @@ void HandleEvent(BusKeyEvent ev) {
                     g_wifi_sel++;
                     PaintWifiList(false);
                 } else if (ev.key == kKeyOk) {
-                    StartPassEdit();
+                    StartKb(false);
                 }
             }
             break;
 
-        case Page::PassEdit: {
-            const int n = static_cast<int>(sizeof(kPassChars)) - 1;
+        case Page::PassEdit:
+        case Page::StopEdit:
             if (ev.key == kKeyOk && ev.type == kPressLong) {
-                if (g_pass_len == 0) {
-                    ShowMessage("EMPTY PASSWORD", Page::PassEdit, 1500);
-                } else {
-                    g_pass[g_pass_len] = '\0';
-                    std::snprintf(g_config->ssid, sizeof(g_config->ssid), "%s",
-                                  g_chosen_ssid);
-                    std::snprintf(g_config->password,
-                                  sizeof(g_config->password), "%s", g_pass);
-                    SaveAndReboot("wifi");
-                }
-                break;
-            }
-            if (ev.key == kKeyDown && ev.type == kPressLong) {
-                if (g_pass_len > 0) {
-                    g_pass_len--;
-                    g_pass[g_pass_len] = '\0';
-                }
-                PaintPassEdit(false);
+                KbSubmit();
                 break;
             }
             if (ev.type == kPressClick) {
                 if (ev.key == kKeyUp) {
-                    g_pass_idx = (g_pass_idx + 1) % n;
+                    g_kb_sel = (g_kb_sel + SelectableCount() - 1) %
+                               SelectableCount();
                 } else if (ev.key == kKeyDown) {
-                    g_pass_idx = (g_pass_idx + n - 1) % n;
+                    g_kb_sel = (g_kb_sel + 1) % SelectableCount();
                 } else if (ev.key == kKeyOk) {
-                    if (g_pass_len < static_cast<int>(sizeof(g_pass) - 1)) {
-                        g_pass[g_pass_len++] = kPassChars[g_pass_idx];
-                    }
-                    if (g_pass_len >= static_cast<int>(sizeof(g_pass) - 1)) {
-                        g_pass[g_pass_len] = '\0';
-                        std::snprintf(g_config->ssid, sizeof(g_config->ssid),
-                                      "%s", g_chosen_ssid);
-                        std::snprintf(g_config->password,
-                                      sizeof(g_config->password), "%s", g_pass);
-                        SaveAndReboot("wifi");
-                        break;
-                    }
+                    KbActivate();
+                    break;  // KbActivate already repainted (or changed page)
                 }
-                PaintPassEdit(false);
+                PaintKbPage(false);
             }
             break;
-        }
-
-        case Page::StopEdit: {
-            const int n = static_cast<int>(sizeof(kStopChars)) - 1;
-            if (ev.key == kKeyOk && ev.type == kPressLong) {
-                if (g_stop_len == 0) {
-                    ShowMessage("EMPTY CODE", Page::StopEdit, 1500);
-                } else {
-                    g_stop[g_stop_len] = '\0';
-                    std::snprintf(g_config->stop, sizeof(g_config->stop), "%s",
-                                  g_stop);
-                    ConfirmStop();
-                }
-                break;
-            }
-            if (ev.key == kKeyDown && ev.type == kPressLong) {
-                if (g_stop_len > 0) {
-                    g_stop_len--;
-                    g_stop[g_stop_len] = '\0';
-                }
-                PaintStopEdit(false);
-                break;
-            }
-            if (ev.type == kPressClick) {
-                if (ev.key == kKeyUp) {
-                    g_stop_idx = (g_stop_idx + 1) % n;
-                } else if (ev.key == kKeyDown) {
-                    g_stop_idx = (g_stop_idx + n - 1) % n;
-                } else if (ev.key == kKeyOk) {
-                    if (g_stop_len < static_cast<int>(sizeof(g_stop) - 1)) {
-                        g_stop[g_stop_len++] = kStopChars[g_stop_idx];
-                    }
-                    if (g_stop_len >= 6) {
-                        g_stop[g_stop_len] = '\0';
-                        std::snprintf(g_config->stop, sizeof(g_config->stop),
-                                      "%s", g_stop);
-                        ConfirmStop();
-                        break;
-                    }
-                }
-                PaintStopEdit(false);
-            }
-            break;
-        }
 
         case Page::RouteList:
             if (ev.key == kKeyOk && ev.type == kPressLong) {
-                StartStopEdit();
+                StartKb(true);
                 break;
             }
             if (ev.type == kPressClick && g_route_count > 0) {
@@ -472,14 +611,23 @@ void HandleEvent(BusKeyEvent ev) {
             g_page = g_msg_back;
             if (g_page == Page::Menu) {
                 PaintMenu(true);
-            } else if (g_page == Page::StopEdit) {
-                PaintStopEdit(false);
-            } else if (g_page == Page::PassEdit) {
-                PaintPassEdit(false);
             } else if (g_page == Page::RouteList) {
                 PaintRouteList(false);
+            } else if (g_page == Page::PassEdit || g_page == Page::StopEdit) {
+                PaintKbPage(false);
             }
             break;
+    }
+}
+
+void RestoreAfterMessage() {
+    g_page = g_msg_back;
+    if (g_page == Page::Menu) {
+        PaintMenu(true);
+    } else if (g_page == Page::RouteList) {
+        PaintRouteList(false);
+    } else if (g_page == Page::PassEdit || g_page == Page::StopEdit) {
+        PaintKbPage(false);
     }
 }
 
@@ -495,16 +643,7 @@ void UiTask(void*) {
             HandleEvent(ev);
         } else if (g_page == Page::Message) {
             // Expired: restore the page underneath.
-            g_page = g_msg_back;
-            if (g_page == Page::Menu) {
-                PaintMenu(true);
-            } else if (g_page == Page::StopEdit) {
-                PaintStopEdit(false);
-            } else if (g_page == Page::PassEdit) {
-                PaintPassEdit(false);
-            } else if (g_page == Page::RouteList) {
-                PaintRouteList(false);
-            }
+            RestoreAfterMessage();
         }
     }
 }
