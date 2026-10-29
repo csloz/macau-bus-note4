@@ -22,7 +22,7 @@
 #include "bus_power.h"
 
 #ifndef BUSWEB_VERSION
-#define BUSWEB_VERSION "2.9.0"
+#define BUSWEB_VERSION "2.9.2"
 #endif
 
 namespace {
@@ -105,6 +105,7 @@ struct ReleaseInfo {
 
 std::vector<ReleaseInfo> g_releases;
 int64_t g_releases_at = -kReleaseCacheMs;
+bool g_releases_full = false;  // cache holds the full list, not just latest
 int64_t g_releases_fail_at = -60LL * 1000 * 1000;  // failure backoff anchor
 
 esp_err_t OnHttpData(esp_http_client_event_t* event) {
@@ -149,8 +150,12 @@ esp_err_t HttpsGet(const char* url, std::string* out) {
 // Numeric compare of "v2.10.0"-style tags; >0 when a is newer than b.
 int CompareVersions(const std::string& a, const std::string& b) {
     int ai[3] = {0, 0, 0}, bi[3] = {0, 0, 0};
-    std::sscanf(a.c_str(), "v%d.%d.%d", &ai[0], &ai[1], &ai[2]);
-    std::sscanf(b.c_str(), "v%d.%d.%d", &bi[0], &bi[1], &bi[2]);
+    const char* pa = a.c_str();
+    const char* pb = b.c_str();
+    if (*pa == 'v' || *pa == 'V') pa++;
+    if (*pb == 'v' || *pb == 'V') pb++;
+    std::sscanf(pa, "%d.%d.%d", &ai[0], &ai[1], &ai[2]);
+    std::sscanf(pb, "%d.%d.%d", &bi[0], &bi[1], &bi[2]);
     for (int i = 0; i < 3; i++) {
         if (ai[i] != bi[i]) return ai[i] - bi[i];
     }
@@ -159,7 +164,9 @@ int CompareVersions(const std::string& a, const std::string& b) {
 
 esp_err_t RefreshReleases(bool latest_only) {
     const int64_t now = esp_timer_get_time() / 1000;
-    if (now - g_releases_at < kReleaseCacheMs && !g_releases.empty()) {
+    // latest_only is satisfied by a cached full list, but not vice versa.
+    if (now - g_releases_at < kReleaseCacheMs && !g_releases.empty() &&
+        (g_releases_full || latest_only)) {
         return ESP_OK;
     }
     // Back off after a failed fetch so page loads don't hammer the
@@ -209,6 +216,7 @@ esp_err_t RefreshReleases(bool latest_only) {
         return ESP_FAIL;
     }
     g_releases = std::move(parsed);
+    g_releases_full = !latest_only;
     g_releases_at = now;
     return ESP_OK;
 }
