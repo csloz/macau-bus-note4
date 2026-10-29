@@ -23,6 +23,13 @@ constexpr int kNativeStride = kWidth / 4;
 constexpr size_t kMaxTransferSize = 1024;
 constexpr int64_t kExternalRefreshTimeoutUs = 5LL * 1000 * 1000;
 
+// Fast B/W waveform pixel codes. With DDX=1 (PSR 0x8E) the 2bpp code written
+// to RAM selects LUT table code+1. In the vendored fast waveform, table 1
+// (code 00) drives white and table 3 (code 10) drives black; both were
+// verified on this panel during the gray4 calibration.
+constexpr uint8_t kFastCodeWhite = 0x0;
+constexpr uint8_t kFastCodeBlack = 0x2;
+
 class MutexGuard {
 public:
     explicit MutexGuard(SemaphoreHandle_t mutex) : mutex_(mutex) {
@@ -73,6 +80,9 @@ struct zectrix_epd_t {
     bool controller_ready = false;
     bool internal_power_on = false;
     bool shadow_valid = false;
+    // Which external waveform currently lives in the controller's LUT RAM.
+    // 0 = none (OTP mode), 1 = fast B/W, 2 = gray16 sequence.
+    int external_waveform = 0;
 
     void SetCs(int level) { gpio_set_level(config.pin_cs, level); }
     void SetDc(int level) { gpio_set_level(config.pin_dc, level); }
@@ -253,6 +263,7 @@ struct zectrix_epd_t {
         // partial refresh.
         internal_power_on = false;
         controller_ready = false;
+        external_waveform = 0;
         esp_err_t err = HardwareReset();
         if (err == ESP_OK) {
             err = SelectOtp();
@@ -271,6 +282,7 @@ struct zectrix_epd_t {
             return err;
         }
         powered = true;
+        external_waveform = 0;
         vTaskDelay(pdMS_TO_TICKS(10));
         err = HardwareReset();
         if (err == ESP_OK) {
@@ -405,6 +417,47 @@ struct zectrix_epd_t {
             static_cast<uint8_t>((y1 >> 8) & 0x03), static_cast<uint8_t>(y1), 0x01};
         for (uint8_t value : values) {
             if (err == ESP_OK) err = SendData(value);
+        }
+        return err;
+    }
+
+    // Loads the fast B/W waveform into the controller unless it is already
+    // resident. Cheap no-op while the fast session stays open; any OTP-path
+    // refresh or power cycle resets external_waveform and forces a reload.
+    esp_err_t EnsureFastWaveform() {
+        if (external_waveform == 1) {
+            return ESP_OK;
+        }
+        const auto waveform = ssd2683_waveform::MakeFastBwWaveform();
+        esp_err_t err = InitExternalWaveform(waveform.data(), waveform.size());
+        if (err == ESP_OK) {
+            external_waveform = 1;
+        }
+        return err;
+    }
+
+    // Writes the full frame as 2bpp fast-waveform codes (two pixels/byte).
+    esp_err_t WriteFastFrame(const uint8_t* framebuffer) {
+        esp_err_t err = SendCommand(0x10);
+        if (err == ESP_OK) err = WaitBusy("fast RAM write");
+        std::array<uint8_t, kNativeStride> line = {};
+        for (int y = 0; err == ESP_OK && y < kHeight; ++y) {
+            for (int byte_x = 0; byte_x < kBwStride; ++byte_x) {
+                const uint8_t input =
+                    framebuffer[static_cast<size_t>(y) * kBwStride + byte_x];
+                for (int nibble = 0; nibble < 2; ++nibble) {
+                    const int base = nibble * 4;
+                    uint8_t packed = 0;
+                    for (int bit = 0; bit < 4; ++bit) {
+                        const uint8_t pixel =
+                            static_cast<uint8_t>((input >> (7 - (base + bit))) & 1U);
+                        const uint8_t code = pixel ? kFastCodeWhite : kFastCodeBlack;
+                        packed |= static_cast<uint8_t>(code << (6 - bit * 2));
+                    }
+                    line[static_cast<size_t>(byte_x) * 2 + nibble] = packed;
+                }
+            }
+            err = SendBytes(line.data(), line.size());
         }
         return err;
     }
@@ -741,6 +794,103 @@ extern "C" esp_err_t zectrix_epd_refresh_partial_1bpp(
     return err;
 }
 
+extern "C" esp_err_t zectrix_epd_refresh_full_fast_1bpp(zectrix_epd_handle_t handle,
+                                                        const uint8_t* framebuffer,
+                                                        size_t framebuffer_size) {
+    if (handle == nullptr || framebuffer == nullptr ||
+        framebuffer_size != ZECTRIX_EPD_1BPP_FRAME_BYTES) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    MutexGuard guard(handle->mutex);
+    if (!guard.locked()) return ESP_FAIL;
+    if (!handle->powered || !handle->controller_ready) return ESP_ERR_INVALID_STATE;
+    esp_err_t err = handle->EnsureFastWaveform();
+    if (err == ESP_OK) {
+        err = handle->WriteFastFrame(framebuffer);
+    }
+    if (err == ESP_OK) {
+        err = handle->TriggerExternalBatch(!handle->internal_power_on);
+    }
+    if (err == ESP_OK) {
+        std::memcpy(handle->shadow, framebuffer, framebuffer_size);
+        handle->shadow_valid = true;
+    } else {
+        handle->shadow_valid = false;
+    }
+    return err;
+}
+
+extern "C" esp_err_t zectrix_epd_refresh_partial_fast_1bpp(
+    zectrix_epd_handle_t handle, const zectrix_epd_rect_t* rect,
+    const uint8_t* pixels, size_t pixels_size) {
+    if (handle == nullptr || rect == nullptr || pixels == nullptr || rect->x < 0 ||
+        rect->y < 0 || rect->width <= 0 || rect->height <= 0 ||
+        rect->x + rect->width > kWidth || rect->y + rect->height > kHeight) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    const size_t source_stride = static_cast<size_t>((rect->width + 7) / 8);
+    if (pixels_size != source_stride * static_cast<size_t>(rect->height)) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    MutexGuard guard(handle->mutex);
+    if (!guard.locked()) return ESP_FAIL;
+    if (!handle->powered || !handle->controller_ready || !handle->shadow_valid) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    esp_err_t err = handle->EnsureFastWaveform();
+    if (err != ESP_OK) {
+        handle->shadow_valid = false;
+        return err;
+    }
+
+    // Drive every pixel of the 8px-aligned window to its new color. No
+    // transition map needed: the fast waveform's white/black tables were
+    // verified to settle same-color pixels without visible motion artifacts.
+    const int x0 = rect->x & ~7;
+    const int aligned_x_end =
+        std::min(kWidth, (rect->x + rect->width + 7) & ~7);
+    const int x1 = aligned_x_end - 1;
+    const int y0 = rect->y;
+    const int y1 = rect->y + rect->height - 1;
+    const int output_stride = ((x1 - x0 + 1) / 8) * 2;
+    std::array<uint8_t, kNativeStride> line = {};
+
+    if (err == ESP_OK) err = handle->SetPartialWindow(x0, y0, x1, y1);
+    if (err == ESP_OK) err = handle->SendCommand(0x10);
+    if (err == ESP_OK) err = handle->WaitBusy("fast partial RAM write");
+
+    for (int y = y0; err == ESP_OK && y <= y1; ++y) {
+        std::fill_n(line.begin(), output_stride, 0);
+        for (int x = x0; x <= x1; ++x) {
+            uint8_t new_pixel = ReadPackedBit(handle->shadow, kBwStride, x, y);
+            if (x >= rect->x && x < rect->x + rect->width) {
+                new_pixel = ReadPackedBit(pixels, source_stride, x - rect->x,
+                                          y - rect->y);
+            }
+            const uint8_t code = new_pixel ? kFastCodeWhite : kFastCodeBlack;
+            const int relative_x = x - x0;
+            line[static_cast<size_t>(relative_x / 4)] |=
+                static_cast<uint8_t>(code << (6 - (relative_x & 3) * 2));
+        }
+        err = handle->SendBytes(line.data(), static_cast<size_t>(output_stride));
+    }
+    if (err == ESP_OK) {
+        err = handle->TriggerExternalBatch(!handle->internal_power_on);
+    }
+    if (err == ESP_OK) {
+        for (int y = 0; y < rect->height; ++y) {
+            for (int x = 0; x < rect->width; ++x) {
+                WritePackedBit(handle->shadow, kBwStride, rect->x + x, rect->y + y,
+                               ReadPackedBit(pixels, source_stride, x, y));
+            }
+        }
+    } else {
+        handle->shadow_valid = false;
+    }
+    return err;
+}
+
 extern "C" esp_err_t zectrix_epd_refresh_full_4bpp(zectrix_epd_handle_t handle,
                                                     const uint8_t* framebuffer,
                                                     size_t framebuffer_size) {
@@ -764,6 +914,7 @@ extern "C" esp_err_t zectrix_epd_refresh_full_4bpp(zectrix_epd_handle_t handle,
         if (!session_open) {
             err = handle->InitExternalWaveform(waveform.data(), waveform.size());
             session_open = err == ESP_OK;
+            if (session_open) handle->external_waveform = 2;
         } else {
             err = handle->LoadExternalWaveform(waveform.data(), waveform.size());
         }

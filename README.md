@@ -56,6 +56,8 @@ bus-set stop T394        # any DSAT stop code (all 451 stops embedded)
 bus-set route 51A        # hero route for the header/hero ETA
 bus-set ssid <ssid>      # multi-word SSIDs: quote them
 bus-set pass <password>
+bus-set flip on|off      # 180deg rotation + UP/DOWN swap
+bus-set fast on|off      # fast e-paper waveform: UI paints 3x snappier
 bus-save
 bus-reboot
 ```
@@ -63,6 +65,14 @@ bus-reboot
 Other console commands: `bus-show`, `bus-now` (refresh immediately),
 `bus-reboot`. Everything is stored in NVS. Current setup: **T394
 (新城大馬路／威尼斯人), route 51A**.
+
+### Fast refresh mode
+
+`bus-set fast on` drives the SSD2683 with a custom external waveform instead
+of the factory OTP waveform: full paints drop from ~1.25 s to ~0.36 s and UI
+scroll bands from ~1 s to ~0.45 s, at the cost of some residual ghosting.
+The scheduled 5-minute background refresh always uses the slow OTP waveform,
+which flashes every pixel and clears the accumulated ghosting.
 
 ## Build
 

@@ -84,6 +84,30 @@ esp_err_t zectrix_epd_refresh_partial_1bpp(zectrix_epd_handle_t handle,
                                            size_t pixels_size);
 
 /**
+ * Full-screen black/white refresh using the fast SSD2683 waveform.
+ *
+ * Same buffer format as zectrix_epd_refresh_full_1bpp. Drives the panel with
+ * the vendored fast B/W waveform via an external-LUT session instead of the
+ * OTP waveform. Expect a noticeably shorter busy window but more residual
+ * ghosting; applications should still perform occasional OTP refreshes.
+ */
+esp_err_t zectrix_epd_refresh_full_fast_1bpp(zectrix_epd_handle_t handle,
+                                             const uint8_t* framebuffer,
+                                             size_t framebuffer_size);
+
+/**
+ * Partial black/white refresh using the fast SSD2683 waveform.
+ *
+ * Same rect/buffer convention as zectrix_epd_refresh_partial_1bpp, but every
+ * pixel inside the (8px-aligned) window is driven to its new color with the
+ * fast waveform. Requires a prior full 1bpp refresh (fast or OTP) so the
+ * driver's shadow buffer matches the panel.
+ */
+esp_err_t zectrix_epd_refresh_partial_fast_1bpp(
+    zectrix_epd_handle_t handle, const zectrix_epd_rect_t* rect,
+    const uint8_t* pixels, size_t pixels_size);
+
+/**
  * Full-screen 16-gray refresh using the calibrated SSD2683 waveform sequence.
  *
  * Format: 400x300, row-major, two pixels per byte, left pixel in the high

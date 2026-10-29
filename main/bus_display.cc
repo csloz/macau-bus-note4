@@ -1,6 +1,7 @@
 #include "bus_display.h"
 
 #include "esp_log.h"
+#include "esp_timer.h"
 
 namespace {
 
@@ -10,6 +11,7 @@ HearthCanvas g_canvas;
 zectrix_epd_handle_t g_epd = nullptr;
 
 bool g_flip = false;
+bool g_fast = false;
 
 // Scratch buffer for the 180-degree-rotated image (full frame or band).
 constexpr size_t kCanvasBytes = HearthCanvas::kWidth / 8 * HearthCanvas::kHeight;
@@ -32,6 +34,14 @@ bool BusDisplayGetFlip() {
     return g_flip;
 }
 
+void BusDisplaySetFast(bool fast) {
+    g_fast = fast;
+}
+
+bool BusDisplayGetFast() {
+    return g_fast;
+}
+
 void BusDisplayInit(zectrix_epd_handle_t epd) {
     g_epd = epd;
 }
@@ -40,7 +50,7 @@ HearthCanvas& BusDisplayCanvas() {
     return g_canvas;
 }
 
-void BusDisplayPaint() {
+void BusDisplayPaint(bool fast_ok) {
     if (g_epd == nullptr) {
         return;
     }
@@ -62,7 +72,14 @@ void BusDisplayPaint() {
         }
         frame = g_rotated;
     }
-    const esp_err_t err = zectrix_epd_refresh_full_1bpp(g_epd, frame, n);
+    const int64_t t0 = esp_timer_get_time();
+    const bool use_fast = g_fast && fast_ok;
+    const esp_err_t err =
+        use_fast ? zectrix_epd_refresh_full_fast_1bpp(g_epd, frame, n)
+                 : zectrix_epd_refresh_full_1bpp(g_epd, frame, n);
+    ESP_LOGI(kTag, "%s full refresh: %lld ms (%s)", use_fast ? "fast" : "otp",
+             static_cast<long long>((esp_timer_get_time() - t0) / 1000),
+             err == ESP_OK ? "ok" : esp_err_to_name(err));
     if (err != ESP_OK) {
         ESP_LOGE(kTag, "refresh failed: %s", esp_err_to_name(err));
     }
@@ -101,8 +118,19 @@ void BusDisplayPaintRows(int y0, int y1) {
     } else {
         rect.y = y0;
     }
-    const esp_err_t err = zectrix_epd_refresh_partial_1bpp(
-        g_epd, &rect, pixels, static_cast<size_t>(rect.height) * kStride);
+    const int64_t t0 = esp_timer_get_time();
+    const esp_err_t err =
+        g_fast ? zectrix_epd_refresh_partial_fast_1bpp(
+                     g_epd, &rect, pixels,
+                     static_cast<size_t>(rect.height) * kStride)
+               : zectrix_epd_refresh_partial_1bpp(
+                     g_epd, &rect, pixels,
+                     static_cast<size_t>(rect.height) * kStride);
+    if (g_fast) {
+        ESP_LOGI(kTag, "fast partial %d rows: %lld ms (%s)", rect.height,
+                 static_cast<long long>((esp_timer_get_time() - t0) / 1000),
+                 err == ESP_OK ? "ok" : esp_err_to_name(err));
+    }
     if (err != ESP_OK) {
         ESP_LOGE(kTag, "partial refresh failed: %s", esp_err_to_name(err));
     }

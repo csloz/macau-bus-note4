@@ -15,10 +15,17 @@ HearthCanvas& BusDisplayCanvas();
 // swapping is handled in the UI layer.
 void BusDisplaySetFlip(bool flip);
 bool BusDisplayGetFlip();
+/** Use the fast SSD2683 waveform for full + partial refreshes (more ghosting). */
+void BusDisplaySetFast(bool fast);
+bool BusDisplayGetFast();
 
 // Full-screen refresh. Powers the panel on first if needed. Blocks until the
 // panel reports busy-release (~2-3 s).
-void BusDisplayPaint();
+//
+// fast_ok=false forces the slow OTP waveform even when fast mode is on; the
+// OTP waveform flashes every pixel and is what clears ghosting left by fast
+// refreshes. The scheduled background refresh passes false.
+void BusDisplayPaint(bool fast_ok = true);
 
 // Partial refresh of the row band [y0, y1). The canvas row stride matches the
 // panel's packed row width, so the band is refreshed straight from the canvas.

@@ -31,7 +31,7 @@
 namespace {
 
 constexpr const char* kTag = "bus.main";
-constexpr const char* kVersion = "2.6.0";
+constexpr const char* kVersion = "2.7.0";
 constexpr TickType_t kRefreshInterval = pdMS_TO_TICKS(5 * 60 * 1000);
 constexpr TickType_t kWifiRetryInterval = pdMS_TO_TICKS(30 * 1000);
 constexpr int kRefreshBit = BIT0;
@@ -58,8 +58,13 @@ void NotifyRefresh() {
     }
 }
 
+// Set before a card paint that should use the slow OTP waveform even in fast
+// mode: the background data refresh is the periodic ghost-cleaner.
+bool g_force_otp_paint = false;
+
 void Paint() {
-    BusDisplayPaint();
+    BusDisplayPaint(!g_force_otp_paint);
+    g_force_otp_paint = false;
 }
 
 // Largest text scale (<= max_scale) whose width fits max_w.
@@ -257,8 +262,11 @@ void AlsoRoutes(const char* stop, const char* hero, char* out, size_t cap) {
 
 // Fetch the hero route; if it does not serve the stop, walk the stop's other
 // routes until one does. Returns the route actually displayed via out->route.
-void UpdateOnce() {
+void UpdateOnce(bool background = false) {
     ESP_LOGI(kTag, "update start");
+    // The 5-min background refresh doubles as the ghost-cleaning pass: keep
+    // it on the slow OTP waveform even when fast mode is enabled.
+    g_force_otp_paint = background;
     if (!BusWifiConnected()) {
         std::snprintf(g_status, sizeof(g_status), "wifi reconnecting");
         (void)BusWifiReconnect(pdMS_TO_TICKS(15000));
@@ -414,6 +422,7 @@ extern "C" void app_main(void) {
 
     RenderSplash("starting...");
     BusDisplaySetFlip(g_config.flip != 0);
+    BusDisplaySetFast(g_config.fast != 0);
     if (g_config.flip) {
         // Re-draw the splash the right way up for a flipped mount.
         RenderSplash("starting...");
@@ -467,6 +476,6 @@ extern "C" void app_main(void) {
             (void)BusWifiReconnect(kWifiRetryInterval);
             continue;
         }
-        UpdateOnce();
+        UpdateOnce(true);
     }
 }

@@ -42,6 +42,7 @@ int CmdShow(int, char**) {
     printf("stop  %s\n", c.stop);
     printf("route %s\n", c.route);
     printf("flip  %s\n", c.flip ? "on" : "off");
+    printf("fast  %s\n", c.fast ? "on" : "off");
     return 0;
 }
 
@@ -65,8 +66,11 @@ int CmdSet(int argc, char** argv) {
     } else if (std::strcmp(key, "flip") == 0) {
         c.flip = (std::strcmp(value, "on") == 0 ||
                   std::strcmp(value, "1") == 0) ? 1 : 0;
+    } else if (std::strcmp(key, "fast") == 0) {
+        c.fast = (std::strcmp(value, "on") == 0 ||
+                  std::strcmp(value, "1") == 0) ? 1 : 0;
     } else {
-        printf("unknown key '%s' (ssid pass stop route flip)\n", key);
+        printf("unknown key '%s' (ssid pass stop route flip fast)\n", key);
         return 1;
     }
     printf("set %s; run 'bus-save' then 'bus-reboot'\n", key);
@@ -130,6 +134,10 @@ esp_err_t BusConfigLoad(BusConfig* out) {
     if (nvs_get_u8(handle, "flip", &flip) == ESP_OK) {
         out->flip = flip ? 1 : 0;
     }
+    uint8_t fast = 0;
+    if (nvs_get_u8(handle, "fast", &fast) == ESP_OK) {
+        out->fast = fast ? 1 : 0;
+    }
     nvs_close(handle);
     return ESP_OK;
 }
@@ -145,6 +153,7 @@ esp_err_t BusConfigSave(const BusConfig& config) {
     nvs_set_str(handle, "stop", config.stop);
     nvs_set_str(handle, "route", config.route);
     nvs_set_u8(handle, "flip", config.flip ? 1 : 0);
+    nvs_set_u8(handle, "fast", config.fast ? 1 : 0);
     err = nvs_commit(handle);
     nvs_close(handle);
     return err;
