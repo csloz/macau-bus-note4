@@ -105,14 +105,26 @@ struct ReleaseInfo {
 
 std::vector<ReleaseInfo> g_releases;
 int64_t g_releases_at = -kReleaseCacheMs;
+int64_t g_releases_fail_at = -60LL * 1000 * 1000;  // failure backoff anchor
 
-// HTTPS GET into a heap buffer. Returns ESP_OK with *out_len set.
+esp_err_t OnHttpData(esp_http_client_event_t* event) {
+    if (event->event_id == HTTP_EVENT_ON_DATA && event->user_data) {
+        static_cast<std::string*>(event->user_data)->append(
+            static_cast<const char*>(event->data), event->data_len);
+    }
+    return ESP_OK;
+}
+
+// HTTPS GET into a heap buffer.
 esp_err_t HttpsGet(const char* url, std::string* out) {
     esp_http_client_config_t config = {};
     config.url = url;
     config.crt_bundle_attach = esp_crt_bundle_attach;
     config.timeout_ms = 15000;
     config.buffer_size = 4096;
+    config.event_handler = OnHttpData;
+    config.user_data = out;
+    out->clear();
     esp_http_client_handle_t client = esp_http_client_init(&config);
     if (client == nullptr) {
         return ESP_FAIL;
@@ -122,18 +134,13 @@ esp_err_t HttpsGet(const char* url, std::string* out) {
     esp_err_t err = esp_http_client_perform(client);
     if (err == ESP_OK) {
         const int status = esp_http_client_get_status_code(client);
-        const int64_t len = esp_http_client_fetch_headers(client);
-        out->clear();
-        if (status == 200 && len > 0) {
-            char chunk[2048];
-            int n;
-            while ((n = esp_http_client_read(client, chunk,
-                                             sizeof(chunk))) > 0) {
-                out->append(chunk, static_cast<size_t>(n));
-            }
-        } else {
+        if (status != 200 || out->empty()) {
+            ESP_LOGW(kTag, "github http status %d got=%zu", status,
+                     out->size());
             err = ESP_FAIL;
         }
+    } else {
+        ESP_LOGW(kTag, "github perform failed: %s", esp_err_to_name(err));
     }
     esp_http_client_cleanup(client);
     return err;
@@ -155,9 +162,15 @@ esp_err_t RefreshReleases(bool latest_only) {
     if (now - g_releases_at < kReleaseCacheMs && !g_releases.empty()) {
         return ESP_OK;
     }
+    // Back off after a failed fetch so page loads don't hammer the
+    // unauthenticated GitHub API rate limit (60/hour per IP).
+    if (now - g_releases_fail_at < 60LL * 1000) {
+        return g_releases.empty() ? ESP_FAIL : ESP_OK;
+    }
     std::string body;
     const esp_err_t err = HttpsGet(latest_only ? kRepoLatest : kRepoApi, &body);
     if (err != ESP_OK) {
+        g_releases_fail_at = now;
         ESP_LOGW(kTag, "release fetch failed: %s", esp_err_to_name(err));
         return err;
     }
@@ -496,7 +509,9 @@ void OtaTask(void* arg) {
     http.url = url;
     http.crt_bundle_attach = esp_crt_bundle_attach;
     http.timeout_ms = 20000;
-    http.buffer_size = 4096;
+    // github.com's redirect response carries large headers.
+    http.buffer_size = 8192;
+    http.buffer_size_tx = 2048;
     esp_https_ota_config_t ota = {};
     ota.http_config = &http;
 

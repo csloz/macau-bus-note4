@@ -74,6 +74,16 @@ It shows IP, time, battery state and current settings, and lets you change
 stop, route, Wi-Fi, flip and fast-refresh from any browser. Saving reboots
 the board to apply. `GET /status` returns the same data as JSON.
 
+### Firmware updates (OTA)
+
+`http://<board-ip>/firmware` lists the GitHub releases with their notes;
+pick one and the board downloads `note4_bus.bin` from the release assets,
+flashes the inactive OTA slot and reboots into it (~1 min, don't power off).
+When a release newer than the running firmware exists, the settings page
+shows an update banner. Releases are published automatically by CI when a
+`v*` tag is pushed. Updating from the web requires the board to be online;
+a failed update leaves the old firmware running.
+
 ### Fast refresh mode
 
 `bus-set fast on` drives the SSD2683 with a custom external waveform instead
