@@ -9,6 +9,7 @@
 
 #include "esp_log.h"
 #include "esp_console.h"
+#include "esp_netif.h"
 #include "esp_sntp.h"
 #include "esp_system.h"
 #include "esp_timer.h"
@@ -24,14 +25,18 @@
 #include "bus_api.h"
 #include "bus_config.h"
 #include "bus_display.h"
+#include "bus_power.h"
 #include "bus_stops_data.h"
 #include "bus_ui.h"
+#include "bus_web.h"
 #include "bus_wifi.h"
+#include "u8g2_font.h"
+#include "u8g2_font_macau.h"
 
 namespace {
 
 constexpr const char* kTag = "bus.main";
-constexpr const char* kVersion = "2.7.0";
+constexpr const char* kVersion = "2.8.0";
 constexpr TickType_t kRefreshInterval = pdMS_TO_TICKS(5 * 60 * 1000);
 constexpr TickType_t kWifiRetryInterval = pdMS_TO_TICKS(30 * 1000);
 constexpr int kRefreshBit = BIT0;
@@ -105,18 +110,83 @@ void RenderNoWifi(const char* detail) {
 }
 
 // Quote/0-style card, scaled up for the 400x300 panel.
+
+constexpr const uint8_t* kSmallFont = u8g2_font_wqy12_t_macau;
+
+int DrawSmall(int x, int y_base, const char* s, int max_px, bool inverted) {
+    return u8g2font::DrawText(g_canvas, kSmallFont, x, y_base, s, max_px,
+                              inverted);
+}
+
+int SmallWidth(const char* s) {
+    return u8g2font::TextWidth(kSmallFont, s);
+}
+
+// Thin status strip across the very top: IP, battery, date/time (12 px font).
+void RenderStatusBar() {
+    const int w = HearthCanvas::kWidth;
+    char ip[16] = "";
+    esp_netif_t* netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    if (netif != nullptr) {
+        esp_netif_ip_info_t info = {};
+        if (esp_netif_get_ip_info(netif, &info) == ESP_OK &&
+            info.ip.addr != 0) {
+            std::snprintf(ip, sizeof(ip), IPSTR, IP2STR(&info.ip));
+        }
+    }
+
+    BusPowerState pwr;
+    BusPowerRead(&pwr);
+    char batt[16] = "";
+    if (pwr.valid) {
+        if (pwr.full) {
+            std::snprintf(batt, sizeof(batt), "%u%% FULL", pwr.percent);
+        } else if (pwr.charging) {
+            std::snprintf(batt, sizeof(batt), "%u%% CHG", pwr.percent);
+        } else {
+            std::snprintf(batt, sizeof(batt), "%u%%", pwr.percent);
+        }
+    }
+
+    time_t now = 0;
+    time(&now);
+    struct tm local = {};
+    localtime_r(&now, &local);
+    static const char* const kDays[] = {"SUN", "MON", "TUE", "WED",
+                                        "THU", "FRI", "SAT"};
+    static const char* const kMonths[] = {"JAN", "FEB", "MAR", "APR",
+                                          "MAY", "JUN", "JUL", "AUG",
+                                          "SEP", "OCT", "NOV", "DEC"};
+    char clock_str[24];
+    std::snprintf(clock_str, sizeof(clock_str), "%s %d %s %02d:%02d",
+                  kDays[local.tm_wday], local.tm_mday,
+                  kMonths[local.tm_mon], local.tm_hour, local.tm_min);
+
+    const int y_base = 15;
+    DrawSmall(8, y_base, ip[0] ? ip : "NO WIFI", 110, false);
+    if (batt[0]) {
+        const int bw = SmallWidth(batt);
+        DrawSmall((w - bw) / 2, y_base, batt, bw + 1, false);
+    }
+    const int cw = SmallWidth(clock_str);
+    DrawSmall(w - 8 - cw, y_base, clock_str, cw + 1, false);
+    g_canvas.HLine(6, 20, w - 12, true);
+}
+
 void RenderCard(const BusView& view, const Weather* wx, const char* stop,
                 const char* also_routes) {
     g_canvas.Clear();
     const int w = HearthCanvas::kWidth;
 
+    RenderStatusBar();
+
     // --- Header bar: solid black, white text ---
-    g_canvas.FillRect(0, 0, w, 64, true);
-    g_canvas.Text(14, 8, view.route, 3, true);
+    g_canvas.FillRect(0, 22, w, 62, true);
+    g_canvas.Text(14, 28, view.route, 3, true);
     const int stop_x = 14 + g_canvas.TextWidth(view.route, 3) + 14;
-    g_canvas.Text(stop_x, 24, stop, 1, true);
+    g_canvas.Text(stop_x, 46, stop, 1, true);
     const int time_x = w - 14 - g_canvas.TextWidth(g_updated, 2);
-    g_canvas.Text(time_x, 16, g_updated, 2, true);
+    g_canvas.Text(time_x, 38, g_updated, 2, true);
 
     // --- Hero ETA: minutes if known, else stops away ---
     char num[12] = "--";
@@ -148,15 +218,15 @@ void RenderCard(const BusView& view, const Weather* wx, const char* stop,
         }
     }
     // Scale the hero number up, then clamp so it always fits the panel.
-    int hero_scale = 7;
+    int hero_scale = 6;
     while (hero_scale > 2 &&
            g_canvas.TextWidth(num, hero_scale) > (w - 180)) {
         hero_scale--;
     }
-    g_canvas.Text(16, 78, num, hero_scale, false);
+    g_canvas.Text(16, 100, num, hero_scale, false);
     if (unit[0]) {
         const int ux = 16 + g_canvas.TextWidth(num, hero_scale) + 10;
-        g_canvas.Text(ux, 78 + 16 * hero_scale - 32, unit, 2, false);
+        g_canvas.Text(ux, 100 + 16 * hero_scale - 32, unit, 2, false);
     }
     g_canvas.Text(16, 202, sub, 2, false);
 
@@ -165,18 +235,18 @@ void RenderCard(const BusView& view, const Weather* wx, const char* stop,
         char temp[16];
         std::snprintf(temp, sizeof(temp), "%dC", wx->temp_c);
         int tw = g_canvas.TextWidth(temp, 3);
-        g_canvas.Text(w - 16 - tw, 84, temp, 3, false);
+        g_canvas.Text(w - 16 - tw, 104, temp, 3, false);
         tw = g_canvas.TextWidth(wx->text, 1);
-        g_canvas.Text(w - 16 - tw, 142, wx->text, 1, false);
+        g_canvas.Text(w - 16 - tw, 162, wx->text, 1, false);
         char rh[16];
         std::snprintf(rh, sizeof(rh), "RH %d%%", wx->humidity);
         tw = g_canvas.TextWidth(rh, 1);
-        g_canvas.Text(w - 16 - tw, 162, rh, 1, false);
+        g_canvas.Text(w - 16 - tw, 182, rh, 1, false);
     }
 
     // --- Divider ---
-    g_canvas.HLine(10, 232, w - 20, true);
-    g_canvas.HLine(10, 233, w - 20, true);
+    g_canvas.HLine(10, 240, w - 20, true);
+    g_canvas.HLine(10, 241, w - 20, true);
 
     // --- Footer: following bus + other routes ---
     char nextline[64];
@@ -200,22 +270,23 @@ void RenderCard(const BusView& view, const Weather* wx, const char* stop,
                       view.route);
     }
     // Auto-shrink so the line can never overflow the panel width.
-    g_canvas.Text(12, 242, nextline,
+    g_canvas.Text(12, 248, nextline,
                   FitScale(nextline, 2, w - 24), false);
 
     char statline[64];
     std::snprintf(statline, sizeof(statline), "%s", g_status);
-    const int sx = w - 12 - g_canvas.TextWidth(statline, 1);
+    const int stat_w = SmallWidth(statline);
+    const int sx = w - 12 - stat_w;
 
     // Trim the ALSO list so it can never collide with the status text.
     char alson[96];
     std::snprintf(alson, sizeof(alson), "ALSO: %s", also_routes);
     int alson_max = sx - 24;
-    while (alson[0] != '\0' && g_canvas.TextWidth(alson, 1) > alson_max) {
+    while (alson[0] != '\0' && SmallWidth(alson) > alson_max) {
         alson[std::strlen(alson) - 1] = '\0';
     }
-    g_canvas.Text(12, 272, alson, 1, false);
-    g_canvas.Text(sx, 272, statline, 1, false);
+    DrawSmall(12, 296, alson, alson_max, false);
+    DrawSmall(sx, 296, statline, stat_w + 1, false);
 
     // --- Border ---
     g_canvas.Rect(0, 0, w, HearthCanvas::kHeight, true);
@@ -428,6 +499,8 @@ extern "C" void app_main(void) {
         RenderSplash("starting...");
     }
 
+    BusPowerInit();
+
     bool configured = BusConfigComplete(g_config);
     if (!configured) {
         ESP_LOGW(kTag, "no wifi configured; waiting for UI or USB bus-set");
@@ -437,6 +510,7 @@ extern "C" void app_main(void) {
     if (configured) {
         const esp_err_t wifi = BusWifiStart(g_config.ssid, g_config.password,
                                             pdMS_TO_TICKS(20000));
+        BusWebStart(&g_config);
         if (wifi != ESP_OK) {
             std::snprintf(g_status, sizeof(g_status), "wifi timeout");
             RenderNoWifi("wifi connect failed");

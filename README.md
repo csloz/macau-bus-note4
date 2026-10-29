@@ -66,6 +66,14 @@ Other console commands: `bus-show`, `bus-now` (refresh immediately),
 `bus-reboot`. Everything is stored in NVS. Current setup: **T394
 (新城大馬路／威尼斯人), route 51A**.
 
+## Web portal
+
+Once the board is on Wi-Fi, a settings portal is served at
+`http://<board-ip>/` (the IP is shown in the top status strip of the card).
+It shows IP, time, battery state and current settings, and lets you change
+stop, route, Wi-Fi, flip and fast-refresh from any browser. Saving reboots
+the board to apply. `GET /status` returns the same data as JSON.
+
 ### Fast refresh mode
 
 `bus-set fast on` drives the SSD2683 with a custom external waveform instead
