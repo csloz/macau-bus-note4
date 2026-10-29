@@ -37,7 +37,7 @@
 namespace {
 
 constexpr const char* kTag = "bus.main";
-constexpr const char* kVersion = "2.9.2";
+constexpr const char* kVersion = "2.9.3";
 constexpr TickType_t kRefreshInterval = pdMS_TO_TICKS(5 * 60 * 1000);
 constexpr TickType_t kWifiRetryInterval = pdMS_TO_TICKS(30 * 1000);
 constexpr int kRefreshBit = BIT0;
@@ -173,18 +173,21 @@ void RenderStatusBar() {
 
     const int y_base = 15;
     int x = 8;
-    x = DrawSmall(x, y_base, ip[0] ? ip : "NO WIFI", 110, false);
+    x = DrawSmall(x, y_base, ip[0] ? ip : "NO WIFI", 118, false);
     if (rssi != 0) {
         char sig[12];
         std::snprintf(sig, sizeof(sig), " %ddB", rssi);
-        x = DrawSmall(x, y_base, sig, 44, false);
+        // DrawText's max_px is an ABSOLUTE x limit, not a width budget.
+        x = DrawSmall(x, y_base, sig, x + SmallWidth(sig) + 1, false);
     }
     if (batt[0]) {
         const int bw = SmallWidth(batt);
-        DrawSmall((w - bw) / 2, y_base, batt, bw + 1, false);
+        const int bx = (w - bw) / 2;
+        DrawSmall(bx, y_base, batt, bx + bw + 1, false);
     }
     const int cw = SmallWidth(clock_str);
-    DrawSmall(w - 8 - cw, y_base, clock_str, cw + 1, false);
+    const int cx = w - 8 - cw;
+    DrawSmall(cx, y_base, clock_str, cx + cw + 1, false);
     g_canvas.HLine(6, 20, w - 12, true);
 }
 
@@ -300,8 +303,8 @@ void RenderCard(const BusView& view, const Weather* wx, const char* stop,
     while (alson[0] != '\0' && SmallWidth(alson) > alson_max) {
         alson[std::strlen(alson) - 1] = '\0';
     }
-    DrawSmall(12, 296, alson, alson_max, false);
-    DrawSmall(sx, 296, statline, stat_w + 1, false);
+    DrawSmall(12, 296, alson, 12 + alson_max, false);
+    DrawSmall(sx, 296, statline, sx + stat_w + 1, false);
 
     // --- Border ---
     g_canvas.Rect(0, 0, w, HearthCanvas::kHeight, true);
