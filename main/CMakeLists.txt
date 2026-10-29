@@ -5,7 +5,8 @@ idf_component_register(
     INCLUDE_DIRS "."
     REQUIRES hearth_gfx zectrix_epd
     PRIV_REQUIRES nvs_flash esp_wifi esp_netif esp_http_client esp_http_server
-                  console esp_timer mbedtls driver esp_adc
+                  console esp_timer mbedtls driver esp_adc esp_https_ota
+                  app_update espressif__cjson
 )
 
 target_compile_features(${COMPONENT_LIB} PUBLIC cxx_std_17)

@@ -3,6 +3,7 @@ name: build
 on:
   push:
     branches: [main]
+    tags: ['v*']
   workflow_dispatch:
 
 jobs:
@@ -25,3 +26,34 @@ jobs:
           name: note4_bus
           path: build/note4_bus.bin
           if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check out repo (with tags)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Download app binary
+        uses: actions/download-artifact@v4
+        with:
+          name: note4_bus
+
+      - name: Create release with firmware
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          NOTES=$(git tag -l --format='%(contents)' "${GITHUB_REF_NAME}" | head -40)
+          if [ -z "$NOTES" ]; then
+            NOTES="note4-bus ${GITHUB_REF_NAME}. Flash note4_bus.bin over USB or use the on-device web updater at http://<board-ip>/firmware."
+          fi
+          gh release create "${GITHUB_REF_NAME}" note4_bus.bin \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "note4-bus ${GITHUB_REF_NAME}" \
+            --notes "$NOTES"

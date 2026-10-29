@@ -11,6 +11,7 @@
 #include "esp_console.h"
 #include "esp_netif.h"
 #include "esp_sntp.h"
+#include "esp_wifi.h"
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -36,7 +37,7 @@
 namespace {
 
 constexpr const char* kTag = "bus.main";
-constexpr const char* kVersion = "2.8.0";
+constexpr const char* kVersion = "2.9.0";
 constexpr TickType_t kRefreshInterval = pdMS_TO_TICKS(5 * 60 * 1000);
 constexpr TickType_t kWifiRetryInterval = pdMS_TO_TICKS(30 * 1000);
 constexpr int kRefreshBit = BIT0;
@@ -122,10 +123,10 @@ int SmallWidth(const char* s) {
     return u8g2font::TextWidth(kSmallFont, s);
 }
 
-// Thin status strip across the very top: IP, battery, date/time (12 px font).
+// Thin status strip across the very top: IP + signal, battery, date/time.
 void RenderStatusBar() {
     const int w = HearthCanvas::kWidth;
-    char ip[16] = "";
+    char ip[24] = "";
     esp_netif_t* netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
     if (netif != nullptr) {
         esp_netif_ip_info_t info = {};
@@ -134,11 +135,16 @@ void RenderStatusBar() {
             std::snprintf(ip, sizeof(ip), IPSTR, IP2STR(&info.ip));
         }
     }
+    wifi_ap_record_t ap = {};
+    int rssi = 0;
+    if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) {
+        rssi = ap.rssi;
+    }
 
     BusPowerState pwr;
-    BusPowerRead(&pwr);
+    const bool batt_ok = BusPowerRead(&pwr);
     char batt[16] = "";
-    if (pwr.valid) {
+    if (batt_ok) {
         if (pwr.full) {
             std::snprintf(batt, sizeof(batt), "%u%% FULL", pwr.percent);
         } else if (pwr.charging) {
@@ -162,8 +168,17 @@ void RenderStatusBar() {
                   kDays[local.tm_wday], local.tm_mday,
                   kMonths[local.tm_mon], local.tm_hour, local.tm_min);
 
+    ESP_LOGI(kTag, "statusbar: ip=\"%s\" rssi=%d batt=\"%s\" (%s) clock=\"%s\"",
+             ip, rssi, batt, batt_ok ? "ok" : "invalid", clock_str);
+
     const int y_base = 15;
-    DrawSmall(8, y_base, ip[0] ? ip : "NO WIFI", 110, false);
+    int x = 8;
+    x = DrawSmall(x, y_base, ip[0] ? ip : "NO WIFI", 110, false);
+    if (rssi != 0) {
+        char sig[12];
+        std::snprintf(sig, sizeof(sig), " %ddB", rssi);
+        x = DrawSmall(x, y_base, sig, 44, false);
+    }
     if (batt[0]) {
         const int bw = SmallWidth(batt);
         DrawSmall((w - bw) / 2, y_base, batt, bw + 1, false);
