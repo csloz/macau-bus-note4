@@ -123,7 +123,7 @@ int SmallWidth(const char* s) {
     return u8g2font::TextWidth(kSmallFont, s);
 }
 
-// Thin status strip across the very top: IP + signal, battery, date/time.
+// Thin status strip along the very bottom: IP + signal, battery, date/time.
 void RenderStatusBar() {
     const int w = HearthCanvas::kWidth;
     char ip[24] = "";
@@ -171,7 +171,7 @@ void RenderStatusBar() {
     ESP_LOGI(kTag, "statusbar: ip=\"%s\" rssi=%d batt=\"%s\" (%s) clock=\"%s\"",
              ip, rssi, batt, batt_ok ? "ok" : "invalid", clock_str);
 
-    const int y_base = 15;
+    const int y_base = 294;
     int x = 8;
     x = DrawSmall(x, y_base, ip[0] ? ip : "NO WIFI", 118, false);
     if (rssi != 0) {
@@ -188,7 +188,7 @@ void RenderStatusBar() {
     const int cw = SmallWidth(clock_str);
     const int cx = w - 8 - cw;
     DrawSmall(cx, y_base, clock_str, cx + cw + 1, false);
-    g_canvas.HLine(6, 20, w - 12, true);
+    g_canvas.HLine(6, 280, w - 12, true);
 }
 
 void RenderCard(const BusView& view, const Weather* wx, const char* stop,
@@ -198,13 +198,13 @@ void RenderCard(const BusView& view, const Weather* wx, const char* stop,
 
     RenderStatusBar();
 
-    // --- Header bar: solid black, white text ---
-    g_canvas.FillRect(0, 22, w, 62, true);
-    g_canvas.Text(14, 28, view.route, 3, true);
+    // --- Header bar: solid black, white text (top of panel) ---
+    g_canvas.FillRect(0, 0, w, 62, true);
+    g_canvas.Text(14, 6, view.route, 3, true);
     const int stop_x = 14 + g_canvas.TextWidth(view.route, 3) + 14;
-    g_canvas.Text(stop_x, 46, stop, 1, true);
+    g_canvas.Text(stop_x, 24, stop, 1, true);
     const int time_x = w - 14 - g_canvas.TextWidth(g_updated, 2);
-    g_canvas.Text(time_x, 38, g_updated, 2, true);
+    g_canvas.Text(time_x, 16, g_updated, 2, true);
 
     // --- Hero ETA: minutes if known, else stops away ---
     char num[12] = "--";
@@ -241,30 +241,30 @@ void RenderCard(const BusView& view, const Weather* wx, const char* stop,
            g_canvas.TextWidth(num, hero_scale) > (w - 180)) {
         hero_scale--;
     }
-    g_canvas.Text(16, 100, num, hero_scale, false);
+    g_canvas.Text(16, 88, num, hero_scale, false);
     if (unit[0]) {
         const int ux = 16 + g_canvas.TextWidth(num, hero_scale) + 10;
-        g_canvas.Text(ux, 100 + 16 * hero_scale - 32, unit, 2, false);
+        g_canvas.Text(ux, 88 + 16 * hero_scale - 32, unit, 2, false);
     }
-    g_canvas.Text(16, 202, sub, 2, false);
+    g_canvas.Text(16, 190, sub, 2, false);
 
     // --- Weather block (right of hero area) ---
     if (wx != nullptr && wx->valid) {
         char temp[16];
         std::snprintf(temp, sizeof(temp), "%dC", wx->temp_c);
         int tw = g_canvas.TextWidth(temp, 3);
-        g_canvas.Text(w - 16 - tw, 104, temp, 3, false);
+        g_canvas.Text(w - 16 - tw, 92, temp, 3, false);
         tw = g_canvas.TextWidth(wx->text, 1);
-        g_canvas.Text(w - 16 - tw, 162, wx->text, 1, false);
+        g_canvas.Text(w - 16 - tw, 150, wx->text, 1, false);
         char rh[16];
         std::snprintf(rh, sizeof(rh), "RH %d%%", wx->humidity);
         tw = g_canvas.TextWidth(rh, 1);
-        g_canvas.Text(w - 16 - tw, 182, rh, 1, false);
+        g_canvas.Text(w - 16 - tw, 170, rh, 1, false);
     }
 
     // --- Divider ---
-    g_canvas.HLine(10, 240, w - 20, true);
-    g_canvas.HLine(10, 241, w - 20, true);
+    g_canvas.HLine(10, 226, w - 20, true);
+    g_canvas.HLine(10, 227, w - 20, true);
 
     // --- Footer: following bus + other routes ---
     char nextline[64];
@@ -288,7 +288,7 @@ void RenderCard(const BusView& view, const Weather* wx, const char* stop,
                       view.route);
     }
     // Auto-shrink so the line can never overflow the panel width.
-    g_canvas.Text(12, 248, nextline,
+    g_canvas.Text(12, 232, nextline,
                   FitScale(nextline, 2, w - 24), false);
 
     char statline[64];
@@ -303,8 +303,8 @@ void RenderCard(const BusView& view, const Weather* wx, const char* stop,
     while (alson[0] != '\0' && SmallWidth(alson) > alson_max) {
         alson[std::strlen(alson) - 1] = '\0';
     }
-    DrawSmall(12, 296, alson, 12 + alson_max, false);
-    DrawSmall(sx, 296, statline, sx + stat_w + 1, false);
+    DrawSmall(12, 276, alson, 12 + alson_max, false);
+    DrawSmall(sx, 276, statline, sx + stat_w + 1, false);
 
     // --- Border ---
     g_canvas.Rect(0, 0, w, HearthCanvas::kHeight, true);
