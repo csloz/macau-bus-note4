@@ -22,7 +22,7 @@
 #include "bus_power.h"
 
 #ifndef BUSWEB_VERSION
-#define BUSWEB_VERSION "2.9.3"
+#define BUSWEB_VERSION "2.9.4"
 #endif
 
 namespace {
